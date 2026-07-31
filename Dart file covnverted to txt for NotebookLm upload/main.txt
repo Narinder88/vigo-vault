@@ -1,0 +1,381 @@
+import 'dart:async';
+import 'dart:io';
+import 'package:awesome_notifications/awesome_notifications.dart';
+import 'package:fitness_snack_lock/providers/ble_provider.dart';
+import 'package:fitness_snack_lock/providers/health_manager_provider.dart';
+import 'package:fitness_snack_lock/providers/health_phone_provider.dart';
+import 'package:fitness_snack_lock/providers/health_service_provider.dart';
+import 'package:fitness_snack_lock/providers/health_watch_provider.dart';
+import 'package:fitness_snack_lock/services/ble_service.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter_blue_plus/flutter_blue_plus.dart';
+import 'package:flutter_easyloading/flutter_easyloading.dart';
+import 'package:flutter_foreground_task/flutter_foreground_task.dart'
+    as ForegroundTaskLibrary;
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:intl/intl.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:watch_connectivity/watch_connectivity.dart';
+
+import 'bootstrap/index.dart';
+import 'bootstrap/service.dart';
+import 'constants/colors.dart';
+import 'constants/default.dart';
+import 'providers/app_setting_provider.dart';
+import 'providers/goal_manager_provider.dart';
+import 'providers/in_app_review_provider.dart';
+import 'providers/notification_manager_provider.dart';
+import 'router.dart';
+import 'services/notification_service.dart';
+
+void main() async {
+  await bootstrap();
+
+  runApp(const ProviderScope(child: RootApp()));
+}
+
+class RootApp extends ConsumerStatefulWidget {
+  const RootApp({super.key});
+
+  @override
+  ConsumerState<ConsumerStatefulWidget> createState() => _RootAppState();
+}
+
+class _RootAppState extends ConsumerState<RootApp> {
+  late final AppLifecycleListener _listener;
+  final _watch = WatchConnectivity();
+
+  @override
+  void initState() {
+    super.initState();
+
+    _watch.messageStream.listen((e) {
+      final healthWatchManager = ref.read(healthWatchProvider.notifier);
+      healthWatchManager.setValidData(e['type'], e['value'], e['date']);
+    });
+
+    _listener = AppLifecycleListener(
+      onResume: handleOnResume,
+    );
+
+    AwesomeNotifications().setListeners(
+      onActionReceivedMethod: NotificationService.onActionReceivedMethod,
+      onNotificationDisplayedMethod: (notification) async {
+        NotificationService.onNotificationDisplayedMethod(ref, notification);
+      },
+    );
+
+    ForegroundTaskLibrary.FlutterForegroundTask.addTaskDataCallback(
+        _onReceiveTaskData);
+
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      // Request permissions and initialize the service.
+      await _requestPermissions();
+      _initService();
+      _startService();
+
+      // Initialize in-app review provider
+      final inAppReview = ref.read(inAppReviewProvider.notifier);
+      await inAppReview.setInitialData();
+    });
+
+    checkSmartLockStatus();
+    Timer.periodic(Duration(seconds: 60), (timer) {
+      checkSmartLockStatus();
+    });
+  }
+
+  Future<void> checkSmartLockStatus() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final connectedDeviceId = prefs.getString('CONNECTED_DEVICE_LOCK');
+
+      if (connectedDeviceId != null) {
+        final device = BluetoothDevice.fromId(connectedDeviceId);
+
+        if (device.isConnected) {
+          ref.read(bleProvider.notifier).setDevice(device);
+
+          var token = ref.read(bleProvider).token;
+          if (token == null) {
+            final latestToken = await BleService.getToken(
+              device.remoteId.str,
+              ignoreConnect: true,
+            );
+            ref.read(bleProvider.notifier).setToken(latestToken);
+            token = latestToken;
+          }
+
+          final bLevel = await BleService.getBatteryLevel(
+            device.remoteId.str,
+            ignoreConnect: true,
+            token: token,
+          );
+          ref.read(bleProvider.notifier).setBatteryLevel(bLevel);
+          ref
+              .read(notificationManagerProvider.notifier)
+              .createReachBatteryNotification(bLevel);
+
+          try {
+            final rssi = await device.readRssi();
+            ref.read(bleProvider.notifier).setRssi(rssi);
+          } catch (e) {
+            ref.read(bleProvider.notifier).setRssi(null);
+          }
+        } else {
+          final isConnected = await BleService.connect(device.remoteId.str);
+          if (isConnected) {
+            ref.read(bleProvider.notifier).setDevice(device);
+
+            var token = ref.read(bleProvider).token;
+            if (token == null) {
+              final latestToken = await BleService.getToken(
+                device.remoteId.str,
+                ignoreConnect: true,
+              );
+              ref.read(bleProvider.notifier).setToken(latestToken);
+              token = latestToken;
+            }
+
+            final bLevel = await BleService.getBatteryLevel(
+              device.remoteId.str,
+              ignoreConnect: true,
+              token: token,
+            );
+            ref.read(bleProvider.notifier).setBatteryLevel(bLevel);
+            ref
+                .read(notificationManagerProvider.notifier)
+                .createReachBatteryNotification(bLevel);
+
+            try {
+              final rssi = await device.readRssi();
+              ref.read(bleProvider.notifier).setRssi(rssi);
+            } catch (e) {
+              ref.read(bleProvider.notifier).setRssi(null);
+            }
+          } else {
+            ref.read(bleProvider.notifier).setRssi(null);
+          }
+        }
+      } else {
+        ref.read(bleProvider.notifier).reset();
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _requestPermissions() async {
+    // Android 13+, you need to allow notification permission to display foreground service notification.
+    //
+    // iOS: If you need notification, ask for permission.
+    final ForegroundTaskLibrary.NotificationPermission notificationPermission =
+        await ForegroundTaskLibrary.FlutterForegroundTask
+            .checkNotificationPermission();
+    if (notificationPermission !=
+        ForegroundTaskLibrary.NotificationPermission.granted) {
+      await ForegroundTaskLibrary.FlutterForegroundTask
+          .requestNotificationPermission();
+    }
+
+    if (Platform.isAndroid) {
+      // Android 12+, there are restrictions on starting a foreground service.
+      //
+      // To restart the service on device reboot or unexpected problem, you need to allow below permission.
+      if (!await ForegroundTaskLibrary
+          .FlutterForegroundTask.isIgnoringBatteryOptimizations) {
+        // This function requires `android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` permission.
+        await ForegroundTaskLibrary.FlutterForegroundTask
+            .requestIgnoreBatteryOptimization();
+      }
+
+      // Use this utility only if you provide services that require long-term survival,
+      // such as exact alarm service, healthcare service, or Bluetooth communication.
+      //
+      // This utility requires the "android.permission.SCHEDULE_EXACT_ALARM" permission.
+      // Using this permission may make app distribution difficult due to Google policy.
+      if (!await ForegroundTaskLibrary
+          .FlutterForegroundTask.canScheduleExactAlarms) {
+        // When you call this function, will be gone to the settings page.
+        // So you need to explain to the user why set it.
+        await ForegroundTaskLibrary.FlutterForegroundTask
+            .openAlarmsAndRemindersSettings();
+      }
+    }
+  }
+
+  void _initService() {
+    ForegroundTaskLibrary.FlutterForegroundTask.init(
+      androidNotificationOptions:
+          ForegroundTaskLibrary.AndroidNotificationOptions(
+        channelId: 'foreground_service',
+        channelName: 'Foreground Service Notification',
+        channelDescription:
+            'This notification appears when the foreground service is running.',
+        onlyAlertOnce: true,
+      ),
+      iosNotificationOptions:
+          const ForegroundTaskLibrary.IOSNotificationOptions(
+        showNotification: false,
+        playSound: false,
+      ),
+      foregroundTaskOptions: ForegroundTaskLibrary.ForegroundTaskOptions(
+        eventAction:
+            ForegroundTaskLibrary.ForegroundTaskEventAction.repeat(5000),
+        autoRunOnBoot: true,
+        autoRunOnMyPackageReplaced: true,
+        allowWakeLock: true,
+        allowWifiLock: true,
+      ),
+    );
+  }
+
+  Future<ForegroundTaskLibrary.ServiceRequestResult> _startService() async {
+    if (await ForegroundTaskLibrary.FlutterForegroundTask.isRunningService) {
+      return ForegroundTaskLibrary.FlutterForegroundTask.restartService();
+    } else {
+      return ForegroundTaskLibrary.FlutterForegroundTask.startService(
+        serviceId: 256,
+        notificationTitle: 'Foreground Service is running',
+        notificationText: 'Tap to return to the app',
+        callback: startCallback,
+      );
+    }
+  }
+
+  void _onReceiveTaskData(Object data) async {
+    final notificationManager = ref.read(notificationManagerProvider.notifier);
+    await notificationManager.setInitialData();
+    final dateAsStr = DateFormat('yyyy-MM-dd').format(DateTime.now());
+
+    final healthManager = ref.read(healthManagerProvider);
+    final source = healthManager.source;
+
+    if (source == 'service') {
+      final healthService = ref.read(healthServiceProvider);
+      notificationManager.createReachGoalNotification(
+        calories: healthService.calorieData[dateAsStr] ?? 0,
+        steps: healthService.stepData[dateAsStr] ?? 0,
+      );
+    }
+
+    if (source == 'phone') {
+      final healthPhone = ref.read(healthPhoneProvider);
+      notificationManager.createReachGoalNotification(
+        calories: healthPhone.calorieData[dateAsStr] ?? 0,
+        steps: healthPhone.stepData[dateAsStr] ?? 0,
+      );
+    }
+
+    if (source == 'watch') {
+      final healthWatch = ref.read(healthServiceProvider);
+      notificationManager.createReachGoalNotification(
+        calories: healthWatch.calorieData[dateAsStr] ?? 0,
+        steps: healthWatch.stepData[dateAsStr] ?? 0,
+      );
+    }
+  }
+
+  @override
+  void dispose() {
+    if (Platform.isAndroid) {
+      // ForegroundService().stop();
+    }
+    _listener.dispose();
+
+    super.dispose();
+  }
+
+  void handleOnResume() async {
+    final goalManager = ref.read(goalManagerProvider.notifier);
+    final appSetting = ref.read(appSettingProvider.notifier);
+    final notificationManager = ref.read(notificationManagerProvider.notifier);
+    final healthManager = ref.read(healthManagerProvider.notifier);
+    final inAppReview = ref.read(inAppReviewProvider.notifier);
+
+    await goalManager.setInitialData();
+    await appSetting.setInitialData();
+    await notificationManager.setInitialData();
+    await healthManager.setInitialData();
+    await inAppReview.setInitialData();
+
+    if (healthManager.isConnected) {
+      healthManager.syncData();
+    }
+
+    // final currentDate = DateTime.now();
+    // final at1pm =
+    //     DateTime(currentDate.year, currentDate.month, currentDate.day, 13);
+    // final isSameAndAfter1pm =
+    //     currentDate.isAfter(at1pm) || currentDate.isAtSameMomentAs(at1pm);
+    // final isSameAndAfter1pm = false;
+    // if (appSetting.value.changedGoalCount < 1 && isSameAndAfter1pm) {
+    //   final yesterday = DateTime.now().subtract(Duration(days: 1));
+    //   final yesterdayGoalData = goalManager.getDailyGoalByDate(yesterday);
+    //   goalManager.setDailyGoal(
+    //       type: 'STEP', data: yesterdayGoalData?.count ?? kGoalStepDefault);
+    //   await appSetting.setChangeGoalTime();
+    //   await appSetting.setChangedGoalCount();
+    // }
+
+    final isActualReset = await appSetting.setChangeGoalTime(isReset: true);
+    if (isActualReset) {
+      goalManager.setDailyGoal(
+        type: 'CALORIE',
+        data: getGoalCalorie(healthManager.sourceWatch),
+      );
+      goalManager.setDailyGoal(type: 'STEP', data: kGoalStepDefault);
+      notificationManager.resetReachGoals();
+
+      try {
+        rootNavigatorKey.currentState
+            ?.pushReplacementNamed(WelcomeRoute().location);
+      } catch (_) {}
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    ref.listen(healthWatchProvider, (current, next) async {
+      final notificationManager =
+          ref.read(notificationManagerProvider.notifier);
+
+      await notificationManager.setInitialData();
+
+      final dateAsStr = DateFormat('yyyy-MM-dd').format(DateTime.now());
+      notificationManager.createReachGoalNotification(
+        calories: next.calorieData[dateAsStr] ?? 0,
+        steps: next.stepData[dateAsStr] ?? 0,
+      );
+    });
+
+    ref.listen(healthServiceProvider, (current, next) async {
+      final notificationManager =
+          ref.read(notificationManagerProvider.notifier);
+
+      await notificationManager.setInitialData();
+
+      final dateAsStr = DateFormat('yyyy-MM-dd').format(DateTime.now());
+      notificationManager.createReachGoalNotification(
+        calories: next.calorieData[dateAsStr] ?? 0,
+        steps: next.stepData[dateAsStr] ?? 0,
+      );
+    });
+
+    ref.listen(inAppReviewProvider, (previous, next) async {
+      // Only trigger review request when count changes
+      if (previous?.count != next.count) {
+        final inAppReview = ref.read(inAppReviewProvider.notifier);
+        await inAppReview.requestReview();
+      }
+    });
+
+    return MaterialApp.router(
+      routerConfig: rootRouter,
+      theme: ThemeData(
+        colorScheme: ColorScheme.fromSeed(seedColor: AppColors.kPrimaryColor),
+        useMaterial3: true,
+      ),
+      builder: EasyLoading.init(),
+      debugShowCheckedModeBanner: false,
+    );
+  }
+}

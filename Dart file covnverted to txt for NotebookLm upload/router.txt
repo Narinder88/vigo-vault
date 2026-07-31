@@ -1,0 +1,240 @@
+import 'package:fitness_snack_lock/features/goal_setup/health_watch_setup_page.dart';
+import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
+
+import 'features/device/device_connection_page/device_connection_page.dart';
+import 'features/device/device_management_page.dart';
+import 'features/device/device_scanning_page/device_scanning_page.dart';
+import 'features/goal_setup/body_data_setup_page.dart';
+import 'features/goal_setup/calories_setup_page/calories_setup_page.dart';
+import 'features/goal_setup/goal_type_selection_page.dart';
+import 'features/goal_setup/health_phone_setup_page.dart';
+import 'features/goal_setup/health_service_setup_page/health_service_setup_page.dart';
+import 'features/goal_setup/health_source_selection_page.dart';
+import 'features/goal_setup/steps_setup_page.dart';
+import 'features/integration/health_service_page/health_service_page.dart';
+import 'features/onboarding/guide_flow_page/guide_flow_page.dart';
+import 'features/onboarding/guide_intro_page.dart';
+import 'features/onboarding/welcome_page.dart';
+import 'features/setting/references_page.dart';
+import 'features/setting/setting_page.dart';
+import 'features/tracking/analyze_result_page/analyze_result_page.dart';
+import 'features/tracking/tracking_page/tracking_page.dart';
+
+part 'router.g.dart';
+
+final rootNavigatorKey = GlobalKey<NavigatorState>();
+
+final rootRouter = GoRouter(
+  initialLocation: WelcomeRoute().location,
+  routes: $appRoutes,
+  navigatorKey: rootNavigatorKey,
+);
+
+@TypedGoRoute<GuideIntroRoute>(
+  path: '/guide',
+  routes: <TypedRoute<RouteData>>[
+    TypedGoRoute<GuideFlowRoute>(
+      path: 'flow',
+    )
+  ],
+)
+class GuideIntroRoute extends GoRouteData with $GuideIntroRoute {
+  const GuideIntroRoute();
+
+  @override
+  Widget build(BuildContext context, GoRouterState state) {
+    return const GuideIntroPage();
+  }
+}
+
+class GuideFlowRoute extends GoRouteData with $GuideFlowRoute {
+  const GuideFlowRoute();
+
+  @override
+  Widget build(BuildContext context, GoRouterState state) {
+    return const GuideFlowPage();
+  }
+}
+
+@TypedGoRoute<GoalTypeSelectionRoute>(
+  path: '/goal',
+  routes: <TypedRoute<RouteData>>[
+    TypedGoRoute<BodyDataSetupRoute>(path: 'body-data'),
+    TypedGoRoute<StepsSetupRoute>(path: 'step'),
+    TypedGoRoute<CaloriesSetupRoute>(path: 'calorie'),
+  ],
+)
+class GoalTypeSelectionRoute extends GoRouteData with $GoalTypeSelectionRoute {
+  const GoalTypeSelectionRoute({this.$extra});
+
+  final ({VoidCallback primarySuccessFn})? $extra;
+
+  @override
+  Widget build(BuildContext context, GoRouterState state) {
+    return const GoalTypeSelectionPage();
+  }
+}
+
+class BodyDataSetupRoute extends GoRouteData with $BodyDataSetupRoute {
+  const BodyDataSetupRoute();
+
+  @override
+  Widget build(BuildContext context, GoRouterState state) {
+    return const BodyDataSetupPage();
+  }
+}
+
+class StepsSetupRoute extends GoRouteData with $StepsSetupRoute {
+  const StepsSetupRoute();
+
+  @override
+  Widget build(BuildContext context, GoRouterState state) {
+    return const StepsSetupPage();
+  }
+}
+
+class CaloriesSetupRoute extends GoRouteData with $CaloriesSetupRoute {
+  const CaloriesSetupRoute();
+
+  @override
+  Widget build(BuildContext context, GoRouterState state) {
+    return const CaloriesSetupPage();
+  }
+}
+
+@TypedGoRoute<TrackingRoute>(
+  path: '/tracking',
+  routes: <TypedRoute<RouteData>>[
+    TypedGoRoute<AnalyzeResultRoute>(path: 'analyze'),
+  ],
+)
+class TrackingRoute extends GoRouteData with $TrackingRoute {
+  const TrackingRoute();
+
+  @override
+  Widget build(BuildContext context, GoRouterState state) {
+    return const TrackingPage();
+  }
+}
+
+class AnalyzeResultRoute extends GoRouteData with $AnalyzeResultRoute {
+  const AnalyzeResultRoute();
+
+  @override
+  Widget build(BuildContext context, GoRouterState state) {
+    return const AnalyzeResultPage();
+  }
+}
+
+@TypedGoRoute<SettingRoute>(
+  path: '/setting',
+  routes: <TypedRoute<RouteData>>[
+    TypedGoRoute<ReferencesRoute>(path: 'references'),
+  ],
+)
+class SettingRoute extends GoRouteData with $SettingRoute {
+  @override
+  Widget build(BuildContext context, GoRouterState state) {
+    return const SettingPage();
+  }
+}
+
+class ReferencesRoute extends GoRouteData with $ReferencesRoute {
+  @override
+  Widget build(BuildContext context, GoRouterState state) {
+    return const ReferencesPage();
+  }
+}
+
+@TypedGoRoute<DeviceConnectionRoute>(
+  path: '/device',
+  routes: <TypedRoute<RouteData>>[
+    TypedGoRoute<DeviceManagementRoute>(path: 'manage'),
+    TypedGoRoute<DeviceScanningRoute>(path: 'scan'),
+  ],
+)
+class DeviceConnectionRoute extends GoRouteData with $DeviceConnectionRoute {
+  @override
+  Widget build(BuildContext context, GoRouterState state) {
+    return const DeviceConnectionPage();
+  }
+}
+
+class DeviceManagementRoute extends GoRouteData with $DeviceManagementRoute {
+  @override
+  Widget build(BuildContext context, GoRouterState state) {
+    return const DeviceManagementPage();
+  }
+}
+
+class DeviceScanningRoute extends GoRouteData with $DeviceScanningRoute {
+  @override
+  Widget build(BuildContext context, GoRouterState state) {
+    return const DeviceScanningPage();
+  }
+}
+
+@TypedGoRoute<HealthServiceRoute>(
+  path: '/integration',
+  routes: [
+    TypedGoRoute<HealthSourceSelectionRoute>(path: 'source-setup'),
+    TypedGoRoute<HealthServiceSetupRoute>(path: 'service-connect'),
+    TypedGoRoute<HealthPhoneSetupRoute>(path: 'phone-connect'),
+    TypedGoRoute<HealthWatchSetupRoute>(path: 'watch-connect'),
+  ],
+)
+class HealthServiceRoute extends GoRouteData with $HealthServiceRoute {
+  @override
+  Widget build(BuildContext context, GoRouterState state) {
+    return const HealthServicePage();
+  }
+}
+
+class HealthSourceSelectionRoute extends GoRouteData
+    with $HealthSourceSelectionRoute {
+  const HealthSourceSelectionRoute();
+
+  @override
+  Widget build(BuildContext context, GoRouterState state) {
+    return const HealthSourceSelectionPage();
+  }
+}
+
+class HealthServiceSetupRoute extends GoRouteData
+    with $HealthServiceSetupRoute {
+  const HealthServiceSetupRoute();
+
+  @override
+  Widget build(BuildContext context, GoRouterState state) {
+    return const HealthServiceSetupPage();
+  }
+}
+
+class HealthPhoneSetupRoute extends GoRouteData with $HealthPhoneSetupRoute {
+  const HealthPhoneSetupRoute();
+
+  @override
+  Widget build(BuildContext context, GoRouterState state) {
+    return const HealthPhoneSetupPage();
+  }
+}
+
+class HealthWatchSetupRoute extends GoRouteData with $HealthWatchSetupRoute {
+  const HealthWatchSetupRoute();
+
+  @override
+  Widget build(BuildContext context, GoRouterState state) {
+    return const HealthWatchSetupPage();
+  }
+}
+
+@TypedGoRoute<WelcomeRoute>(
+  path: '/',
+)
+class WelcomeRoute extends GoRouteData with $WelcomeRoute {
+  @override
+  Widget build(BuildContext context, GoRouterState state) {
+    return const WelcomePage();
+  }
+}

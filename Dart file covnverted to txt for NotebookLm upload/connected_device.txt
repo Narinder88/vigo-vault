@@ -1,0 +1,198 @@
+import 'dart:math';
+
+import 'package:fitness_snack_lock/providers/notification_manager_provider.dart';
+import 'package:fitness_snack_lock/services/ble_service.dart';
+import 'package:fitness_snack_lock/widgets/smart_lock_rssi_reader.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter_blue_plus/flutter_blue_plus.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:particles_flutter/component/particle/particle.dart';
+import 'package:particles_flutter/particles_engine.dart';
+import 'package:phosphoricons_flutter/phosphoricons_flutter.dart';
+
+import '../../../constants/colors.dart';
+import '../../../providers/ble_provider.dart';
+import '../../../widgets/smart_lock_battery.dart';
+import 'updates_countdown.dart';
+
+class ConnectedDevice extends ConsumerStatefulWidget {
+  const ConnectedDevice({
+    super.key,
+    required this.onDisconnect,
+    required this.device,
+    required this.batteryLevel,
+  });
+
+  final BluetoothDevice device;
+  final VoidCallback onDisconnect;
+  final int batteryLevel;
+
+  @override
+  ConsumerState<ConsumerStatefulWidget> createState() =>
+      _ConnectedDeviceState();
+}
+
+class _ConnectedDeviceState extends ConsumerState<ConnectedDevice> {
+  List<Particle> createParticles() {
+    var rng = Random();
+    List<Particle> particles = [];
+    for (int i = 0; i < 30; i++) {
+      particles.add(Particle(
+        color: AppColors.kPrimaryColor.withOpacity(0.3),
+        size: rng.nextDouble() * 10,
+        velocity: Offset(rng.nextDouble() * 200 * randomSign(),
+            rng.nextDouble() * 200 * randomSign()),
+      ));
+    }
+    return particles;
+  }
+
+  double randomSign() {
+    var rng = Random();
+    return rng.nextBool() ? 1 : -1;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final connectedDevice = FlutterBluePlus.connectedDevices;
+    final firstConnectedDevice = connectedDevice.firstOrNull ?? widget.device;
+    final rssi = ref.watch(bleProvider).rssi;
+    final shouldShowDisconnected = rssi == -100;
+
+    return Stack(
+      children: [
+        Particles(
+          awayRadius: 150,
+          particles: createParticles(),
+          height: MediaQuery.sizeOf(context).height,
+          width: MediaQuery.sizeOf(context).width,
+          onTapAnimation: false,
+          awayAnimationDuration: const Duration(milliseconds: 500),
+          awayAnimationCurve: Curves.linear,
+          enableHover: false,
+          hoverRadius: 90,
+          connectDots: false,
+        ),
+        Column(
+          children: [
+            Expanded(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  UpdatesCountdown(),
+                  Padding(
+                    padding: EdgeInsets.only(top: 32, bottom: 12),
+                    child: Text(
+                      "Smart Lock: ${firstConnectedDevice.advName.isNotEmpty ? firstConnectedDevice.advName : 'BR38'}",
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontWeight: FontWeight.w500,
+                        fontSize: 18,
+                      ),
+                    ),
+                  ),
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        shouldShowDisconnected ? 'Disconnected' : 'Connected',
+                        style: TextStyle(
+                          fontWeight: FontWeight.w500,
+                          color: shouldShowDisconnected
+                              ? Colors.red
+                              : Colors.green,
+                        ),
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 4),
+                        child: Icon(
+                          PhosphorIconsBold.dot,
+                          color: Colors.grey.shade800,
+                        ),
+                      ),
+                      SmartLockBattery(widget.batteryLevel),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 4),
+                        child: Icon(
+                          PhosphorIconsBold.dot,
+                          color: Colors.grey.shade800,
+                        ),
+                      ),
+                      SmartLockRssiReader(),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            SafeArea(
+              child: Column(
+                children: [
+                  // Padding(
+                  //   padding: EdgeInsets.only(bottom: 8),
+                  //   child: SizedBox(
+                  //     width: double.infinity,
+                  //     child: TextButton(
+                  //       onPressed: () async {},
+                  //       style: FilledButton.styleFrom(
+                  //         foregroundColor: AppColors.kPrimaryColor,
+                  //       ),
+                  //       child: const Text('Delegate Permission'),
+                  //     ),
+                  //   ),
+                  // ),
+                  SizedBox(
+                    width: double.infinity,
+                    child: FilledButton(
+                      onPressed: () async {
+                        if (!shouldShowDisconnected) {
+                          await firstConnectedDevice.disconnect();
+                          widget.onDisconnect();
+                        } else {
+                          final isConnected = await BleService.connect(
+                            firstConnectedDevice.remoteId.str,
+                          );
+                          if (!isConnected) {
+                            ref.read(bleProvider.notifier).setRssi(null);
+                            return;
+                          }
+
+                          final bLevel = await BleService.getBatteryLevel(
+                            firstConnectedDevice.remoteId.str,
+                            ignoreConnect: true,
+                          );
+                          if (context.mounted) {
+                            ref
+                                .read(bleProvider.notifier)
+                                .setBatteryLevel(bLevel);
+                            ref
+                                .read(notificationManagerProvider.notifier)
+                                .createReachBatteryNotification(bLevel);
+
+                            try {
+                              final rssi =
+                                  await firstConnectedDevice.readRssi();
+                              ref.read(bleProvider.notifier).setRssi(rssi);
+                            } catch (e) {
+                              ref.read(bleProvider.notifier).setRssi(null);
+                            }
+                          }
+                        }
+                      },
+                      style: FilledButton.styleFrom(
+                        backgroundColor: AppColors.kPrimaryColor,
+                      ),
+                      child: shouldShowDisconnected
+                          ? const Text('Reconnect')
+                          : const Text('Disconnect'),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "694710093667",
+    "project_id": "fitness-snack-lock",
+    "storage_bucket": "fitness-snack-lock.appspot.com"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:694710093667:android:e611cbf4f72fe4a063f556",
+        "android_client_info": {
+          "package_name": "com.singh.fitnessssnacklock"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBpGEPeKGuWdWEt9DdAuuUVdbeQQBA_OiI"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

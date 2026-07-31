@@ -1,0 +1,45 @@
+import 'dart:async';
+
+import 'package:fitness_snack_lock/providers/ble_provider.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import 'signal_indicator.dart';
+
+class SmartLockRssiReader extends ConsumerStatefulWidget {
+  const SmartLockRssiReader({super.key, this.rssi});
+
+  final int? rssi;
+
+  @override
+  ConsumerState<ConsumerStatefulWidget> createState() =>
+      _SmartLockRssiReaderState();
+}
+
+class _SmartLockRssiReaderState extends ConsumerState<SmartLockRssiReader> {
+  int? rssi;
+  Timer? syncRssiTimer;
+
+  @override
+  Widget build(BuildContext context) {
+    final deviceRssi = ref.watch(bleProvider).rssi;
+    final rssiValue = widget.rssi ?? deviceRssi;
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        SignalIndicator(rssi: rssiValue),
+        if (rssiValue > -100)
+          Padding(
+            padding: EdgeInsets.only(left: 8),
+            child: Text(
+              '$rssiValue',
+              style: TextStyle(
+                fontWeight: FontWeight.w600,
+                color: Colors.black54,
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+}

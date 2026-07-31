@@ -1,0 +1,71 @@
+import 'package:flutter_blue_plus/flutter_blue_plus.dart';
+import 'package:flutter_riverpod/legacy.dart';
+
+typedef BleData = ({
+  BluetoothDevice? device,
+  int rssi,
+  int batteryLevel,
+  String? token,
+});
+
+final bleProvider = StateNotifierProvider<BleProvider, BleData>((ref) {
+  return BleProvider();
+});
+
+class BleProvider extends StateNotifier<BleData> {
+  BleProvider()
+      : super((
+          device: null,
+          rssi: -100,
+          batteryLevel: 0,
+          token: null,
+        ));
+
+  BleData get value => state;
+
+  void setDevice(BluetoothDevice? device) {
+    state = (
+      device: device,
+      rssi: state.rssi,
+      batteryLevel: state.batteryLevel,
+      token: state.token,
+    );
+  }
+
+  void setRssi(int? rssi) {
+    final newRssi = rssi ?? -100;
+    state = (
+      device: state.device,
+      rssi: newRssi,
+      batteryLevel: newRssi == -100 ? 0 : state.batteryLevel,
+      token: state.token,
+    );
+  }
+
+  void setBatteryLevel(int? batteryLevel) {
+    state = (
+      device: state.device,
+      rssi: state.rssi,
+      batteryLevel: batteryLevel ?? 0,
+      token: state.token,
+    );
+  }
+
+  void setToken(String? token) {
+    state = (
+      device: state.device,
+      rssi: state.rssi,
+      batteryLevel: state.batteryLevel,
+      token: token,
+    );
+  }
+
+  void reset() {
+    state = (
+      device: null,
+      rssi: 0,
+      batteryLevel: 0,
+      token: null,
+    );
+  }
+}

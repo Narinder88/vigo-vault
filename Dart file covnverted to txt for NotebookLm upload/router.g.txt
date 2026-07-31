@@ -1,0 +1,551 @@
+// GENERATED CODE - DO NOT MODIFY BY HAND
+
+part of 'router.dart';
+
+// **************************************************************************
+// GoRouterGenerator
+// **************************************************************************
+
+List<RouteBase> get $appRoutes => [
+      $guideIntroRoute,
+      $goalTypeSelectionRoute,
+      $trackingRoute,
+      $settingRoute,
+      $deviceConnectionRoute,
+      $healthServiceRoute,
+      $welcomeRoute,
+    ];
+
+RouteBase get $guideIntroRoute => GoRouteData.$route(
+      path: '/guide',
+      factory: $GuideIntroRoute._fromState,
+      routes: [
+        GoRouteData.$route(
+          path: 'flow',
+          factory: $GuideFlowRoute._fromState,
+        ),
+      ],
+    );
+
+mixin $GuideIntroRoute on GoRouteData {
+  static GuideIntroRoute _fromState(GoRouterState state) =>
+      const GuideIntroRoute();
+
+  @override
+  String get location => GoRouteData.$location(
+        '/guide',
+      );
+
+  @override
+  void go(BuildContext context) => context.go(location);
+
+  @override
+  Future<T?> push<T>(BuildContext context) => context.push<T>(location);
+
+  @override
+  void pushReplacement(BuildContext context) =>
+      context.pushReplacement(location);
+
+  @override
+  void replace(BuildContext context) => context.replace(location);
+}
+
+mixin $GuideFlowRoute on GoRouteData {
+  static GuideFlowRoute _fromState(GoRouterState state) =>
+      const GuideFlowRoute();
+
+  @override
+  String get location => GoRouteData.$location(
+        '/guide/flow',
+      );
+
+  @override
+  void go(BuildContext context) => context.go(location);
+
+  @override
+  Future<T?> push<T>(BuildContext context) => context.push<T>(location);
+
+  @override
+  void pushReplacement(BuildContext context) =>
+      context.pushReplacement(location);
+
+  @override
+  void replace(BuildContext context) => context.replace(location);
+}
+
+RouteBase get $goalTypeSelectionRoute => GoRouteData.$route(
+      path: '/goal',
+      factory: $GoalTypeSelectionRoute._fromState,
+      routes: [
+        GoRouteData.$route(
+          path: 'body-data',
+          factory: $BodyDataSetupRoute._fromState,
+        ),
+        GoRouteData.$route(
+          path: 'step',
+          factory: $StepsSetupRoute._fromState,
+        ),
+        GoRouteData.$route(
+          path: 'calorie',
+          factory: $CaloriesSetupRoute._fromState,
+        ),
+      ],
+    );
+
+mixin $GoalTypeSelectionRoute on GoRouteData {
+  static GoalTypeSelectionRoute _fromState(GoRouterState state) =>
+      GoalTypeSelectionRoute(
+        $extra: state.extra as ({void Function() primarySuccessFn})?,
+      );
+
+  GoalTypeSelectionRoute get _self => this as GoalTypeSelectionRoute;
+
+  @override
+  String get location => GoRouteData.$location(
+        '/goal',
+      );
+
+  @override
+  void go(BuildContext context) => context.go(location, extra: _self.$extra);
+
+  @override
+  Future<T?> push<T>(BuildContext context) =>
+      context.push<T>(location, extra: _self.$extra);
+
+  @override
+  void pushReplacement(BuildContext context) =>
+      context.pushReplacement(location, extra: _self.$extra);
+
+  @override
+  void replace(BuildContext context) =>
+      context.replace(location, extra: _self.$extra);
+}
+
+mixin $BodyDataSetupRoute on GoRouteData {
+  static BodyDataSetupRoute _fromState(GoRouterState state) =>
+      const BodyDataSetupRoute();
+
+  @override
+  String get location => GoRouteData.$location(
+        '/goal/body-data',
+      );
+
+  @override
+  void go(BuildContext context) => context.go(location);
+
+  @override
+  Future<T?> push<T>(BuildContext context) => context.push<T>(location);
+
+  @override
+  void pushReplacement(BuildContext context) =>
+      context.pushReplacement(location);
+
+  @override
+  void replace(BuildContext context) => context.replace(location);
+}
+
+mixin $StepsSetupRoute on GoRouteData {
+  static StepsSetupRoute _fromState(GoRouterState state) =>
+      const StepsSetupRoute();
+
+  @override
+  String get location => GoRouteData.$location(
+        '/goal/step',
+      );
+
+  @override
+  void go(BuildContext context) => context.go(location);
+
+  @override
+  Future<T?> push<T>(BuildContext context) => context.push<T>(location);
+
+  @override
+  void pushReplacement(BuildContext context) =>
+      context.pushReplacement(location);
+
+  @override
+  void replace(BuildContext context) => context.replace(location);
+}
+
+mixin $CaloriesSetupRoute on GoRouteData {
+  static CaloriesSetupRoute _fromState(GoRouterState state) =>
+      const CaloriesSetupRoute();
+
+  @override
+  String get location => GoRouteData.$location(
+        '/goal/calorie',
+      );
+
+  @override
+  void go(BuildContext context) => context.go(location);
+
+  @override
+  Future<T?> push<T>(BuildContext context) => context.push<T>(location);
+
+  @override
+  void pushReplacement(BuildContext context) =>
+      context.pushReplacement(location);
+
+  @override
+  void replace(BuildContext context) => context.replace(location);
+}
+
+RouteBase get $trackingRoute => GoRouteData.$route(
+      path: '/tracking',
+      factory: $TrackingRoute._fromState,
+      routes: [
+        GoRouteData.$route(
+          path: 'analyze',
+          factory: $AnalyzeResultRoute._fromState,
+        ),
+      ],
+    );
+
+mixin $TrackingRoute on GoRouteData {
+  static TrackingRoute _fromState(GoRouterState state) => const TrackingRoute();
+
+  @override
+  String get location => GoRouteData.$location(
+        '/tracking',
+      );
+
+  @override
+  void go(BuildContext context) => context.go(location);
+
+  @override
+  Future<T?> push<T>(BuildContext context) => context.push<T>(location);
+
+  @override
+  void pushReplacement(BuildContext context) =>
+      context.pushReplacement(location);
+
+  @override
+  void replace(BuildContext context) => context.replace(location);
+}
+
+mixin $AnalyzeResultRoute on GoRouteData {
+  static AnalyzeResultRoute _fromState(GoRouterState state) =>
+      const AnalyzeResultRoute();
+
+  @override
+  String get location => GoRouteData.$location(
+        '/tracking/analyze',
+      );
+
+  @override
+  void go(BuildContext context) => context.go(location);
+
+  @override
+  Future<T?> push<T>(BuildContext context) => context.push<T>(location);
+
+  @override
+  void pushReplacement(BuildContext context) =>
+      context.pushReplacement(location);
+
+  @override
+  void replace(BuildContext context) => context.replace(location);
+}
+
+RouteBase get $settingRoute => GoRouteData.$route(
+      path: '/setting',
+      factory: $SettingRoute._fromState,
+      routes: [
+        GoRouteData.$route(
+          path: 'references',
+          factory: $ReferencesRoute._fromState,
+        ),
+      ],
+    );
+
+mixin $SettingRoute on GoRouteData {
+  static SettingRoute _fromState(GoRouterState state) => SettingRoute();
+
+  @override
+  String get location => GoRouteData.$location(
+        '/setting',
+      );
+
+  @override
+  void go(BuildContext context) => context.go(location);
+
+  @override
+  Future<T?> push<T>(BuildContext context) => context.push<T>(location);
+
+  @override
+  void pushReplacement(BuildContext context) =>
+      context.pushReplacement(location);
+
+  @override
+  void replace(BuildContext context) => context.replace(location);
+}
+
+mixin $ReferencesRoute on GoRouteData {
+  static ReferencesRoute _fromState(GoRouterState state) => ReferencesRoute();
+
+  @override
+  String get location => GoRouteData.$location(
+        '/setting/references',
+      );
+
+  @override
+  void go(BuildContext context) => context.go(location);
+
+  @override
+  Future<T?> push<T>(BuildContext context) => context.push<T>(location);
+
+  @override
+  void pushReplacement(BuildContext context) =>
+      context.pushReplacement(location);
+
+  @override
+  void replace(BuildContext context) => context.replace(location);
+}
+
+RouteBase get $deviceConnectionRoute => GoRouteData.$route(
+      path: '/device',
+      factory: $DeviceConnectionRoute._fromState,
+      routes: [
+        GoRouteData.$route(
+          path: 'manage',
+          factory: $DeviceManagementRoute._fromState,
+        ),
+        GoRouteData.$route(
+          path: 'scan',
+          factory: $DeviceScanningRoute._fromState,
+        ),
+      ],
+    );
+
+mixin $DeviceConnectionRoute on GoRouteData {
+  static DeviceConnectionRoute _fromState(GoRouterState state) =>
+      DeviceConnectionRoute();
+
+  @override
+  String get location => GoRouteData.$location(
+        '/device',
+      );
+
+  @override
+  void go(BuildContext context) => context.go(location);
+
+  @override
+  Future<T?> push<T>(BuildContext context) => context.push<T>(location);
+
+  @override
+  void pushReplacement(BuildContext context) =>
+      context.pushReplacement(location);
+
+  @override
+  void replace(BuildContext context) => context.replace(location);
+}
+
+mixin $DeviceManagementRoute on GoRouteData {
+  static DeviceManagementRoute _fromState(GoRouterState state) =>
+      DeviceManagementRoute();
+
+  @override
+  String get location => GoRouteData.$location(
+        '/device/manage',
+      );
+
+  @override
+  void go(BuildContext context) => context.go(location);
+
+  @override
+  Future<T?> push<T>(BuildContext context) => context.push<T>(location);
+
+  @override
+  void pushReplacement(BuildContext context) =>
+      context.pushReplacement(location);
+
+  @override
+  void replace(BuildContext context) => context.replace(location);
+}
+
+mixin $DeviceScanningRoute on GoRouteData {
+  static DeviceScanningRoute _fromState(GoRouterState state) =>
+      DeviceScanningRoute();
+
+  @override
+  String get location => GoRouteData.$location(
+        '/device/scan',
+      );
+
+  @override
+  void go(BuildContext context) => context.go(location);
+
+  @override
+  Future<T?> push<T>(BuildContext context) => context.push<T>(location);
+
+  @override
+  void pushReplacement(BuildContext context) =>
+      context.pushReplacement(location);
+
+  @override
+  void replace(BuildContext context) => context.replace(location);
+}
+
+RouteBase get $healthServiceRoute => GoRouteData.$route(
+      path: '/integration',
+      factory: $HealthServiceRoute._fromState,
+      routes: [
+        GoRouteData.$route(
+          path: 'source-setup',
+          factory: $HealthSourceSelectionRoute._fromState,
+        ),
+        GoRouteData.$route(
+          path: 'service-connect',
+          factory: $HealthServiceSetupRoute._fromState,
+        ),
+        GoRouteData.$route(
+          path: 'phone-connect',
+          factory: $HealthPhoneSetupRoute._fromState,
+        ),
+        GoRouteData.$route(
+          path: 'watch-connect',
+          factory: $HealthWatchSetupRoute._fromState,
+        ),
+      ],
+    );
+
+mixin $HealthServiceRoute on GoRouteData {
+  static HealthServiceRoute _fromState(GoRouterState state) =>
+      HealthServiceRoute();
+
+  @override
+  String get location => GoRouteData.$location(
+        '/integration',
+      );
+
+  @override
+  void go(BuildContext context) => context.go(location);
+
+  @override
+  Future<T?> push<T>(BuildContext context) => context.push<T>(location);
+
+  @override
+  void pushReplacement(BuildContext context) =>
+      context.pushReplacement(location);
+
+  @override
+  void replace(BuildContext context) => context.replace(location);
+}
+
+mixin $HealthSourceSelectionRoute on GoRouteData {
+  static HealthSourceSelectionRoute _fromState(GoRouterState state) =>
+      const HealthSourceSelectionRoute();
+
+  @override
+  String get location => GoRouteData.$location(
+        '/integration/source-setup',
+      );
+
+  @override
+  void go(BuildContext context) => context.go(location);
+
+  @override
+  Future<T?> push<T>(BuildContext context) => context.push<T>(location);
+
+  @override
+  void pushReplacement(BuildContext context) =>
+      context.pushReplacement(location);
+
+  @override
+  void replace(BuildContext context) => context.replace(location);
+}
+
+mixin $HealthServiceSetupRoute on GoRouteData {
+  static HealthServiceSetupRoute _fromState(GoRouterState state) =>
+      const HealthServiceSetupRoute();
+
+  @override
+  String get location => GoRouteData.$location(
+        '/integration/service-connect',
+      );
+
+  @override
+  void go(BuildContext context) => context.go(location);
+
+  @override
+  Future<T?> push<T>(BuildContext context) => context.push<T>(location);
+
+  @override
+  void pushReplacement(BuildContext context) =>
+      context.pushReplacement(location);
+
+  @override
+  void replace(BuildContext context) => context.replace(location);
+}
+
+mixin $HealthPhoneSetupRoute on GoRouteData {
+  static HealthPhoneSetupRoute _fromState(GoRouterState state) =>
+      const HealthPhoneSetupRoute();
+
+  @override
+  String get location => GoRouteData.$location(
+        '/integration/phone-connect',
+      );
+
+  @override
+  void go(BuildContext context) => context.go(location);
+
+  @override
+  Future<T?> push<T>(BuildContext context) => context.push<T>(location);
+
+  @override
+  void pushReplacement(BuildContext context) =>
+      context.pushReplacement(location);
+
+  @override
+  void replace(BuildContext context) => context.replace(location);
+}
+
+mixin $HealthWatchSetupRoute on GoRouteData {
+  static HealthWatchSetupRoute _fromState(GoRouterState state) =>
+      const HealthWatchSetupRoute();
+
+  @override
+  String get location => GoRouteData.$location(
+        '/integration/watch-connect',
+      );
+
+  @override
+  void go(BuildContext context) => context.go(location);
+
+  @override
+  Future<T?> push<T>(BuildContext context) => context.push<T>(location);
+
+  @override
+  void pushReplacement(BuildContext context) =>
+      context.pushReplacement(location);
+
+  @override
+  void replace(BuildContext context) => context.replace(location);
+}
+
+RouteBase get $welcomeRoute => GoRouteData.$route(
+      path: '/',
+      factory: $WelcomeRoute._fromState,
+    );
+
+mixin $WelcomeRoute on GoRouteData {
+  static WelcomeRoute _fromState(GoRouterState state) => WelcomeRoute();
+
+  @override
+  String get location => GoRouteData.$location(
+        '/',
+      );
+
+  @override
+  void go(BuildContext context) => context.go(location);
+
+  @override
+  Future<T?> push<T>(BuildContext context) => context.push<T>(location);
+
+  @override
+  void pushReplacement(BuildContext context) =>
+      context.pushReplacement(location);
+
+  @override
+  void replace(BuildContext context) => context.replace(location);
+}

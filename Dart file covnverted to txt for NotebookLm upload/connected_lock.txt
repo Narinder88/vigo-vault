@@ -1,0 +1,167 @@
+import 'dart:async';
+
+import 'package:fitness_snack_lock/constants/colors.dart';
+import 'package:fitness_snack_lock/providers/in_app_review_provider.dart';
+import 'package:fitness_snack_lock/router.dart';
+import 'package:fitness_snack_lock/widgets/smart_lock_battery.dart';
+import 'package:fitness_snack_lock/widgets/smart_lock_connector.dart';
+import 'package:fitness_snack_lock/widgets/smart_lock_rssi_reader.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter_easyloading/flutter_easyloading.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:phosphoricons_flutter/phosphoricons_flutter.dart';
+import 'package:wave_blob/wave_blob.dart';
+
+import '../../../services/ble_service.dart';
+import '../../../utils/show_unlock_padlock_success_dialog.dart';
+
+class ConnectedLock extends ConsumerStatefulWidget {
+  const ConnectedLock({
+    super.key,
+    required this.onUnlockSuccess,
+  });
+
+  final VoidCallback onUnlockSuccess;
+
+  @override
+  ConsumerState<ConsumerStatefulWidget> createState() => _ConnectedLockState();
+}
+
+class _ConnectedLockState extends ConsumerState<ConnectedLock> {
+  Timer? timer;
+  var _amplitude = 4250.0;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((timeStamp) async {
+      timer = Timer.periodic(const Duration(milliseconds: 300), (timer) {
+        setState(() {
+          _amplitude = 8500.0 * 0.45;
+        });
+      });
+    });
+  }
+
+  @override
+  void dispose() {
+    timer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SmartLockConnector(
+      onConnectedBuilder: (context, device, batteryLevel) {
+        final deviceName = device.advName.isNotEmpty ? device.advName : 'BR38';
+        return Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 48)
+                  .copyWith(bottom: 8),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      'Smart Lock: $deviceName',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                        color: batteryLevel > 0 && batteryLevel <= 20
+                            ? Colors.red
+                            : AppColors.kPrimaryColor,
+                      ),
+                    ),
+                  ),
+                  SmartLockBattery(batteryLevel),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 4),
+                    child: Icon(
+                      PhosphorIconsBold.dot,
+                      color: Colors.grey.shade800,
+                    ),
+                  ),
+                  SmartLockRssiReader(),
+                ],
+              ),
+            ),
+            SizedBox(height: 48),
+            InkWell(
+              onTap: () async {
+                try {
+                  EasyLoading.show(status: 'Unlocking...');
+                  final isUnlocked =
+                      await BleService.connectAndUnLock(device.remoteId.str);
+                  if (isUnlocked) {
+                    EasyLoading.dismiss();
+                    widget.onUnlockSuccess();
+                    if (context.mounted) {
+                      await showUnlockPadlockSuccessDialog(context);
+                      await ref.read(inAppReviewProvider.notifier).countUp();
+                    }
+                  }
+                } catch (e) {
+                  EasyLoading.dismiss();
+                  EasyLoading.showError(
+                    'Can not unlock the Smart Lock!',
+                  );
+                }
+              },
+              highlightColor: Colors.green.shade100,
+              borderRadius: BorderRadius.circular(100),
+              child: SizedBox(
+                width: 200,
+                height: 200,
+                child: WaveBlob(
+                  blobCount: 3,
+                  amplitude: _amplitude,
+                  scale: 1,
+                  autoScale: true,
+                  centerCircle: true,
+                  overCircle: true,
+                  circleColors: const [
+                    Colors.green,
+                  ],
+                  colors: [
+                    Colors.green.withOpacity(0.3),
+                    Colors.green.withOpacity(0.3),
+                  ],
+                  child: const Icon(
+                    PhosphorIconsBold.lockKey,
+                    color: Colors.white,
+                    size: 64.0,
+                  ),
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+      onDisconnectedBuilder: (context) => Padding(
+        padding: const EdgeInsets.only(top: 48),
+        child: Column(
+          children: [
+            CircleAvatar(
+              radius: 80,
+              child: FilledButton(
+                onPressed: () async {
+                  await DeviceConnectionRoute().push(context);
+                  setState(() {});
+                },
+                style: TextButton.styleFrom(
+                  foregroundColor: AppColors.kPrimaryColor,
+                  backgroundColor: Colors.transparent,
+                ),
+                child: Text('Connect'),
+              ),
+            ),
+            const Padding(
+              padding: EdgeInsets.only(top: 20, bottom: 12),
+              child: Text('No Smart Locks available yet!'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
