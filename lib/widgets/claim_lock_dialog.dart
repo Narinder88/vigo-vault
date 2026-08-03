@@ -11,6 +11,7 @@ Future<bool?> showClaimLockDialog(
   return showDialog<bool>(
     context: context,
     barrierDismissible: false,
+    useRootNavigator: true,
     builder: (dialogContext) {
       return AlertDialog(
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),

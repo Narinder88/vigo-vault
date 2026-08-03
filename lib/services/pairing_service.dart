@@ -24,12 +24,18 @@ class LockAuthenticationException implements Exception {
 }
 
 class PairingService {
-  static Future<bool> isPaired(String deviceId) {
+  /// True only when an ownership secret exists in secure storage for [deviceId].
+  static Future<bool> isPaired(String deviceId) async {
+    if (deviceId.isEmpty) return false;
+    return LockSecretStorage.hasSecretKey(deviceId);
+  }
+
+  static Future<bool> isRegisteredLocally(String deviceId) {
     return PairedLockStorage.isPaired(deviceId);
   }
 
   static Future<bool> hasOwnershipSecret(String deviceId) {
-    return LockSecretStorage.hasSecretKey(deviceId);
+    return isPaired(deviceId);
   }
 
   static Future<String?> getOwnershipSecret(String deviceId) {
@@ -57,21 +63,20 @@ class PairingService {
     if (!await isPaired(deviceId)) {
       throw PairingRequiredException(deviceId);
     }
-
-    if (!await hasOwnershipSecret(deviceId)) {
-      throw LockAuthenticationException(
-        deviceId,
-        message:
-            'Lock $deviceId has no ownership secret. Re-claim the lock to provision authentication.',
-      );
-    }
   }
 
-  /// Migrates previously saved locks so existing users stay paired after upgrade.
+  /// Keeps secure storage aligned with saved locks after app upgrades.
   static Future<void> migrateExistingLocks(Iterable<String> deviceIds) async {
     for (final deviceId in deviceIds) {
-      if (!await isPaired(deviceId)) {
-        await claimLock(deviceId);
+      if (await LockSecretStorage.hasSecretKey(deviceId)) {
+        if (!await PairedLockStorage.isPaired(deviceId)) {
+          await PairedLockStorage.pair(deviceId);
+        }
+        continue;
+      }
+
+      if (await PairedLockStorage.isPaired(deviceId)) {
+        await PairedLockStorage.unpair(deviceId);
       }
     }
   }

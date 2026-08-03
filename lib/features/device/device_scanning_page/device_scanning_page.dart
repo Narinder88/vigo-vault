@@ -153,12 +153,14 @@ class _DeviceScanningPageState extends ConsumerState<DeviceScanningPage> {
     required String deviceId,
     required String displayName,
     required String sessionToken,
+    required BuildContext sheetContext,
   }) async {
-    final alreadyPaired = await PairingService.isPaired(deviceId);
-    final hasSecret = await PairingService.hasOwnershipSecret(deviceId);
-    if (alreadyPaired && hasSecret) {
+    if (await PairingService.isPaired(deviceId)) {
+      _dismissConnectionSheet(sheetContext);
       return true;
     }
+
+    _dismissConnectionSheet(sheetContext);
 
     if (!mounted) return false;
 
@@ -204,6 +206,7 @@ class _DeviceScanningPageState extends ConsumerState<DeviceScanningPage> {
       deviceId: deviceId,
       displayName: displayName,
       sessionToken: token,
+      sheetContext: sheetContext,
     );
     if (!claimed || !mounted) return;
 
@@ -230,28 +233,25 @@ class _DeviceScanningPageState extends ConsumerState<DeviceScanningPage> {
     }
 
     if (widget.fromDashboard && mounted) {
-      _dismissConnectionSheet(sheetContext);
       Navigator.of(context).pop(true);
       return;
     }
-
-    _dismissConnectionSheet(sheetContext);
   }
 
-  void _finishSuccessfulConnection({
+  Future<void> _finishSuccessfulConnection({
     required ScanResult scanResult,
     required String token,
     required BuildContext sheetContext,
     int? batteryLevel,
     int? rssi,
-  }) {
-    unawaited(_registerAndFinishConnection(
+  }) async {
+    await _registerAndFinishConnection(
       scanResult: scanResult,
       token: token,
       sheetContext: sheetContext,
       batteryLevel: batteryLevel,
       rssi: rssi,
-    ));
+    );
   }
 
   Future<({int? batteryLevel, int rssi})> _readBatteryAndRssi({
@@ -318,7 +318,7 @@ class _DeviceScanningPageState extends ConsumerState<DeviceScanningPage> {
       return;
     }
 
-    _finishSuccessfulConnection(
+    await _finishSuccessfulConnection(
       scanResult: scanResult,
       token: validToken,
       sheetContext: sheetContext,
