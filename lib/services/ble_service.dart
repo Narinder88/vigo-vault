@@ -430,7 +430,7 @@ class BleService {
   static final Guid _lockNotifyCharacteristicUuid = Guid('36f6');
   static const Duration _streamResponseTimeout = Duration(seconds: 2);
   static const Duration _handshakeTimeout = Duration(seconds: 3);
-  static const Duration _handshakeNotifyTimeout = Duration(milliseconds: 2000);
+  static const Duration _handshakeNotifyTimeout = Duration(seconds: 3);
   static const Duration _batteryReadTimeout = Duration(seconds: 3);
   static const List<int> _discreteBatteryLevels = [0, 20, 40, 60, 80, 100];
 
@@ -450,6 +450,34 @@ class BleService {
     final defaultKey = DataRequestPattern.getDefaultEncryptKey(deviceId);
     currentEncryptKey = defaultKey;
     return defaultKey;
+  }
+
+  static Future<String> _resolveHandshakeEncryptKey(String deviceId) async {
+    if (await LockSecretStorage.hasSecretKey(deviceId)) {
+      final storedSecret = await LockSecretStorage.getSecretKey(deviceId);
+      if (storedSecret != null && storedSecret.isNotEmpty) {
+        return storedSecret;
+      }
+    }
+
+    return DataRequestPattern.defaultEncryptKey;
+  }
+
+  static Future<List<String>> _handshakeDecryptKeys(String deviceId) async {
+    final keys = <String>[];
+    final handshakeKey = await _resolveHandshakeEncryptKey(deviceId);
+    keys.add(handshakeKey);
+
+    if (handshakeKey != DataRequestPattern.defaultEncryptKey) {
+      keys.add(DataRequestPattern.defaultEncryptKey);
+    }
+
+    final macDefaultKey = DataRequestPattern.getDefaultEncryptKey(deviceId);
+    if (!keys.contains(macDefaultKey)) {
+      keys.add(macDefaultKey);
+    }
+
+    return keys;
   }
 
   static BluetoothService? _findLockService(List<BluetoothService> services) {
@@ -585,16 +613,37 @@ class BleService {
     String deviceId,
     BluetoothCharacteristic writeCharacteristic,
   ) async {
+    final handshakeKey = await _resolveHandshakeEncryptKey(deviceId);
     await _writeEncryptedFrame(
       deviceId,
       DataRequestPattern.getTokenRequestHex(),
       writeCharacteristic: writeCharacteristic,
-      writeTimeout: _handshakeNotifyTimeout.inSeconds,
+      encryptKey: handshakeKey,
+      writeTimeout: _handshakeTimeout.inSeconds,
     );
   }
 
-  /// Handshake: enable CCCD → settle → listen → write challenge → await notify.
   static Future<List<int>?> _readFreshTokenResponse(String deviceId) async {
+    try {
+      return await _readFreshTokenResponseInternal(deviceId).timeout(
+        _handshakeTimeout,
+        onTimeout: () {
+          throw TimeoutException('Token handshake timed out');
+        },
+      );
+    } on TimeoutException {
+      await _cancelHandshakeSubscriptions(deviceId);
+      return null;
+    } catch (_) {
+      await _cancelHandshakeSubscriptions(deviceId);
+      return null;
+    }
+  }
+
+  /// Handshake: enable CCCD → settle → listen → write challenge → await notify.
+  static Future<List<int>?> _readFreshTokenResponseInternal(
+    String deviceId,
+  ) async {
     await _cancelHandshakeSubscriptions(deviceId);
 
     final device = BluetoothDevice.fromId(deviceId);
@@ -634,14 +683,106 @@ class BleService {
         onTimeout: () => throw TimeoutException('Token handshake timed out'),
       );
       return response;
-    } on TimeoutException {
-      return null;
-    } catch (_) {
-      return null;
     } finally {
       await subscription?.cancel();
       _handshakeNotifySubscriptions.remove(deviceId);
     }
+  }
+
+  static String? _parseTokenWithKey(List<int> response, String encryptKey) {
+    if (response.isEmpty) return null;
+
+    final hexResponse = DataService.bytesToHexString(response);
+    if (hexResponse.length < 32) return null;
+
+    final decryptedResponse = DataService.decrypt(
+      hexResponse.substring(0, 32),
+      encryptKey,
+    );
+    if (decryptedResponse == null) return null;
+
+    final token = DataRequestPattern.parseSessionToken(decryptedResponse);
+    if (_isInvalidToken(token)) return null;
+    return token;
+  }
+
+  /// Requests a session token using command 06 01 with timeout and retry.
+  static Future<String?> requestToken(
+    String deviceId, {
+    bool ignoreConnect = false,
+  }) async {
+    if (!ignoreConnect) {
+      final connected = await BleService.connect(deviceId);
+      if (!connected) {
+        return null;
+      }
+    }
+
+    for (var attempt = 0; attempt < _maxHandshakeAttempts; attempt++) {
+      if (attempt > 0) {
+        await Future<void>.delayed(const Duration(milliseconds: 300));
+      }
+
+      try {
+        final response = await _readFreshTokenResponse(deviceId);
+        if (response == null || response.isEmpty) {
+          continue;
+        }
+
+        final token = await _parseTokenFromResponse(deviceId, response);
+        if (_isValidToken(token)) {
+          _deviceTokens[deviceId] = token!;
+          return token;
+        }
+      } on TimeoutException {
+        continue;
+      } catch (_) {
+        continue;
+      }
+    }
+
+    return null;
+  }
+
+  static Future<String?> _parseTokenFromResponse(
+    String deviceId,
+    List<int> response,
+  ) async {
+    final keys = await _handshakeDecryptKeys(deviceId);
+    for (final encryptKey in keys) {
+      final token = _parseTokenWithKey(response, encryptKey);
+      if (_isValidToken(token)) {
+        return token;
+      }
+    }
+    return null;
+  }
+
+  static Future<String> getToken(
+    String deviceId, {
+    bool ignoreConnect = false,
+    bool forceFresh = true,
+  }) async {
+    if (forceFresh) {
+      _resetHandshakeState(deviceId);
+    }
+
+    try {
+      final token = await requestToken(
+        deviceId,
+        ignoreConnect: ignoreConnect,
+      ).timeout(_handshakeTimeout, onTimeout: () => null);
+
+      if (_isValidToken(token)) {
+        return token!;
+      }
+    } on TimeoutException {
+      // Fall through to invalid token handling below.
+    } catch (_) {
+      // Fall through to invalid token handling below.
+    }
+
+    return DataRequestPattern.defaultTokenHex;
   }
 
   static Future<List<int>> _awaitLockCharacteristicValue(
@@ -861,86 +1002,6 @@ class BleService {
     } catch (_) {}
 
     return null;
-  }
-
-  static Future<String?> _parseTokenFromResponse(
-    String deviceId,
-    List<int> response,
-  ) async {
-    if (response.isEmpty) return null;
-
-    final hexResponse = DataService.bytesToHexString(response);
-    if (hexResponse.length < 32) return null;
-
-    final encryptKey = await _resolveEncryptKey(deviceId);
-    final decryptedResponse = DataService.decrypt(
-      hexResponse.substring(0, 32),
-      encryptKey,
-    );
-    if (decryptedResponse == null) return null;
-
-    final token = DataRequestPattern.parseSessionToken(decryptedResponse);
-    if (_isInvalidToken(token)) return null;
-    return token;
-  }
-
-  static Future<String> getToken(
-    String deviceId, {
-    bool ignoreConnect = false,
-    bool forceFresh = true,
-  }) async {
-    if (forceFresh) {
-      _resetHandshakeState(deviceId);
-    }
-
-    for (var attempt = 0; attempt < _maxHandshakeAttempts; attempt++) {
-      if (attempt > 0) {
-        await Future<void>.delayed(const Duration(milliseconds: 500));
-      }
-
-      try {
-        final token = await _getTokenInternal(
-          deviceId,
-          ignoreConnect: ignoreConnect,
-        ).timeout(
-          _handshakeTimeout,
-          onTimeout: () => DataRequestPattern.defaultTokenHex,
-        );
-
-        if (_isValidToken(token)) {
-          _deviceTokens[deviceId] = token;
-          print('DEBUG: getToken completed: $token');
-          return token;
-        }
-      } on TimeoutException {
-        continue;
-      } catch (_) {
-        continue;
-      }
-    }
-
-    print('DEBUG: getToken completed: ${DataRequestPattern.defaultTokenHex}');
-    return DataRequestPattern.defaultTokenHex;
-  }
-
-  static Future<String> _getTokenInternal(
-    String deviceId, {
-    bool ignoreConnect = false,
-  }) async {
-    if (!ignoreConnect) {
-      final isConnected = await BleService.connect(deviceId);
-      if (!isConnected) {
-        return DataRequestPattern.defaultTokenHex;
-      }
-    }
-
-    final response = await _readFreshTokenResponse(deviceId);
-    if (response == null || response.isEmpty) {
-      return DataRequestPattern.defaultTokenHex;
-    }
-
-    return await _parseTokenFromResponse(deviceId, response) ??
-        DataRequestPattern.defaultTokenHex;
   }
 
   static Future<void> _safeDisconnect(BluetoothDevice device) async {

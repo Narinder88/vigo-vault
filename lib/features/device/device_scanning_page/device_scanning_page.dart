@@ -149,6 +149,28 @@ class _DeviceScanningPageState extends ConsumerState<DeviceScanningPage> {
     }
   }
 
+  void _failConnectionFlow({
+    required BuildContext sheetContext,
+    required String message,
+  }) {
+    _dismissConnectionSheet(sheetContext);
+    _connectSessionActive = false;
+
+    if (!mounted) return;
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message)),
+    );
+  }
+
+  void _showConnectionError(String message) {
+    if (!mounted) return;
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message)),
+    );
+  }
+
   Future<bool> _ensureLockClaimed({
     required String deviceId,
     required String displayName,
@@ -173,6 +195,7 @@ class _DeviceScanningPageState extends ConsumerState<DeviceScanningPage> {
     if (claimed != true) {
       await BleService.resetDeviceConnection(deviceId);
       _connectSessionActive = false;
+      _showConnectionError('Lock claim was cancelled.');
       return false;
     }
 
@@ -187,6 +210,16 @@ class _DeviceScanningPageState extends ConsumerState<DeviceScanningPage> {
       _connectSessionActive = false;
       if (!mounted) return false;
       await showLockAuthenticationDialog(context);
+      _showConnectionError(
+        'Could not authenticate with this lock. Please try again.',
+      );
+      return false;
+    } catch (_) {
+      await BleService.resetDeviceConnection(deviceId);
+      _connectSessionActive = false;
+      _showConnectionError(
+        'Claim failed. Please move closer to the lock and try again.',
+      );
       return false;
     }
   }
@@ -202,56 +235,48 @@ class _DeviceScanningPageState extends ConsumerState<DeviceScanningPage> {
     final displayName = LockConnectionHelper.defaultDisplayName(scanResult.device);
     final hardwareName = LockConnectionHelper.hardwareName(scanResult.device);
 
-    final claimed = await _ensureLockClaimed(
-      deviceId: deviceId,
-      displayName: displayName,
-      sessionToken: token,
-      sheetContext: sheetContext,
-    );
-    if (!claimed || !mounted) return;
+    try {
+      final claimed = await _ensureLockClaimed(
+        deviceId: deviceId,
+        displayName: displayName,
+        sessionToken: token,
+        sheetContext: sheetContext,
+      );
+      if (!claimed || !mounted) return;
 
-    await ref.read(savedLocksProvider.notifier).registerConnectedLock(
-          deviceId: deviceId,
-          displayName: displayName,
-          hardwareName: hardwareName,
-          batteryLevel: batteryLevel,
-          rssi: rssi,
-        );
+      await ref.read(savedLocksProvider.notifier).registerConnectedLock(
+            deviceId: deviceId,
+            displayName: displayName,
+            hardwareName: hardwareName,
+            batteryLevel: batteryLevel,
+            rssi: rssi,
+          );
 
-    ref.read(bleProvider.notifier).setConnected(
-          device: scanResult.device,
-          token: token,
-          batteryLevel: batteryLevel,
-          rssi: rssi,
-          customDeviceName: displayName,
-        );
+      ref.read(bleProvider.notifier).setConnected(
+            device: scanResult.device,
+            token: token,
+            batteryLevel: batteryLevel,
+            rssi: rssi,
+            customDeviceName: displayName,
+          );
 
-    if (batteryLevel != null) {
-      await ref
-          .read(notificationManagerProvider.notifier)
-          .createReachBatteryNotification(batteryLevel);
+      if (batteryLevel != null) {
+        await ref
+            .read(notificationManagerProvider.notifier)
+            .createReachBatteryNotification(batteryLevel);
+      }
+
+      _connectSessionActive = false;
+
+      if (widget.fromDashboard && mounted) {
+        Navigator.of(context).pop(true);
+      }
+    } catch (_) {
+      _failConnectionFlow(
+        sheetContext: sheetContext,
+        message: 'Could not finish connecting to the lock. Please try again.',
+      );
     }
-
-    if (widget.fromDashboard && mounted) {
-      Navigator.of(context).pop(true);
-      return;
-    }
-  }
-
-  Future<void> _finishSuccessfulConnection({
-    required ScanResult scanResult,
-    required String token,
-    required BuildContext sheetContext,
-    int? batteryLevel,
-    int? rssi,
-  }) async {
-    await _registerAndFinishConnection(
-      scanResult: scanResult,
-      token: token,
-      sheetContext: sheetContext,
-      batteryLevel: batteryLevel,
-      rssi: rssi,
-    );
   }
 
   Future<({int? batteryLevel, int rssi})> _readBatteryAndRssi({
@@ -277,37 +302,44 @@ class _DeviceScanningPageState extends ConsumerState<DeviceScanningPage> {
 
     if (!mounted) return;
 
-    final result =
-        await BleService.connect(scanResult.device.remoteId.str);
+    try {
+      final result =
+          await BleService.connect(scanResult.device.remoteId.str);
 
-    if (!mounted) return;
+      if (!mounted) return;
 
-    onConnectFinished();
+      onConnectFinished();
 
-    if (!result) {
-      _connectSessionActive = false;
-      return;
-    }
+      if (!result) {
+        _failConnectionFlow(
+          sheetContext: sheetContext,
+          message: 'Could not connect to the lock. Please try again.',
+        );
+        return;
+      }
 
-    final token = BleService.lastConnectToken;
-    if (!_isValidToken(token)) {
-      _connectSessionActive = false;
-      return;
-    }
+      final token = BleService.lastConnectToken;
+      if (!_isValidToken(token)) {
+        await BleService.resetDeviceConnection(scanResult.device.remoteId.str);
+        _failConnectionFlow(
+          sheetContext: sheetContext,
+          message: 'Token handshake failed. Please try again.',
+        );
+        return;
+      }
 
-    final validToken = token!;
+      final validToken = token!;
 
-    if (!mounted) return;
+      if (!mounted) return;
 
-    final readings = await _readBatteryAndRssi(
-      scanResult: scanResult,
-      deviceId: scanResult.device.remoteId.str,
-      token: validToken,
-    );
+      final readings = await _readBatteryAndRssi(
+        scanResult: scanResult,
+        deviceId: scanResult.device.remoteId.str,
+        token: validToken,
+      );
 
-    if (!mounted) return;
+      if (!mounted) return;
 
-    if (!sheetContext.mounted) {
       await _registerAndFinishConnection(
         scanResult: scanResult,
         token: validToken,
@@ -315,16 +347,19 @@ class _DeviceScanningPageState extends ConsumerState<DeviceScanningPage> {
         batteryLevel: readings.batteryLevel,
         rssi: readings.rssi,
       );
-      return;
+    } on TimeoutException {
+      await BleService.resetDeviceConnection(scanResult.device.remoteId.str);
+      _failConnectionFlow(
+        sheetContext: sheetContext,
+        message: 'Connection timed out. Please try again.',
+      );
+    } catch (_) {
+      await BleService.resetDeviceConnection(scanResult.device.remoteId.str);
+      _failConnectionFlow(
+        sheetContext: sheetContext,
+        message: 'Something went wrong while connecting. Please try again.',
+      );
     }
-
-    await _finishSuccessfulConnection(
-      scanResult: scanResult,
-      token: validToken,
-      sheetContext: sheetContext,
-      batteryLevel: readings.batteryLevel,
-      rssi: readings.rssi,
-    );
   }
 
   void _setConnecting(bool value) {
