@@ -15,7 +15,9 @@ import 'package:phosphoricons_flutter/phosphoricons_flutter.dart';
 
 import '../../services/ble_service.dart';
 import '../../services/lock_connection_helper.dart';
+import '../../services/pairing_service.dart';
 import '../../utils/rssi_utils.dart';
+import '../../widgets/claim_lock_dialog.dart';
 
 class HomePage extends ConsumerStatefulWidget {
   const HomePage({
@@ -236,6 +238,12 @@ class _HomePageState extends ConsumerState<HomePage>
     _startUnlockAnimation();
 
     try {
+      if (!await PairingService.isPaired(deviceId)) {
+        if (!mounted) return;
+        await showPairingRequiredDialog(context);
+        return;
+      }
+
       final bool isUnlocked;
       if (preferExistingConnection &&
           LockConnectionHelper.isPreConnected(deviceId)) {
@@ -251,7 +259,13 @@ class _HomePageState extends ConsumerState<HomePage>
         setState(() => _isUnlocked = true);
         widget.onUnlockSuccess();
         await ref.read(inAppReviewProvider.notifier).countUp();
+      } else if (!await PairingService.isPaired(deviceId)) {
+        if (!mounted) return;
+        await showPairingRequiredDialog(context);
       }
+    } on PairingRequiredException {
+      if (!mounted) return;
+      await showPairingRequiredDialog(context);
     } catch (_) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(

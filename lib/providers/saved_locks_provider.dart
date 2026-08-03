@@ -1,4 +1,5 @@
 import 'package:fitness_snack_lock/models/saved_lock.dart';
+import 'package:fitness_snack_lock/services/pairing_service.dart';
 import 'package:fitness_snack_lock/services/saved_lock_storage.dart';
 import 'package:flutter_riverpod/legacy.dart';
 
@@ -34,6 +35,7 @@ class SavedLocksNotifier extends StateNotifier<SavedLocksState> {
     }
 
     final locks = await SavedLockStorage.loadLocks();
+    await PairingService.migrateExistingLocks(locks.map((lock) => lock.id));
     final activeLockId = await SavedLockStorage.getActiveLockId();
     final storedPrimaryLockId = await SavedLockStorage.getPrimaryLockId();
     var primaryLockId = _resolvePrimaryLockId(
@@ -191,6 +193,10 @@ class SavedLocksNotifier extends StateNotifier<SavedLocksState> {
     int? batteryLevel,
     int? rssi,
   }) async {
+    if (!await PairingService.isPaired(deviceId)) {
+      return;
+    }
+
     final existing = lockById(deviceId);
     final lock = (existing ??
             SavedLock(
@@ -249,6 +255,7 @@ class SavedLocksNotifier extends StateNotifier<SavedLocksState> {
   }
 
   Future<void> removeLock(String lockId) async {
+    await PairingService.unpairLock(lockId);
     await SavedLockStorage.removeLock(lockId);
 
     final locks =

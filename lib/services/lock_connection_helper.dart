@@ -4,6 +4,7 @@ import 'package:fitness_snack_lock/providers/saved_locks_provider.dart';
 import 'package:fitness_snack_lock/services/ble_connection_monitor.dart';
 import 'package:fitness_snack_lock/services/ble_service.dart';
 import 'package:fitness_snack_lock/services/data_service.dart';
+import 'package:fitness_snack_lock/services/pairing_service.dart';
 import 'package:fitness_snack_lock/services/saved_lock_storage.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 
@@ -193,7 +194,11 @@ class LockConnectionHelper {
       return false;
     }
 
-    return BleService.requestToUnlock(deviceId);
+    try {
+      return await BleService.requestToUnlock(deviceId);
+    } on PairingRequiredException {
+      return false;
+    }
   }
 
   static Future<bool> attemptAutoReconnect({

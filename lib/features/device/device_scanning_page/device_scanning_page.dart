@@ -14,6 +14,8 @@ import '../../../providers/notification_manager_provider.dart';
 import '../../../providers/saved_locks_provider.dart';
 import '../../../services/ble_service.dart';
 import '../../../services/lock_connection_helper.dart';
+import '../../../services/pairing_service.dart';
+import '../../../widgets/claim_lock_dialog.dart';
 
 class DeviceScanningPage extends ConsumerStatefulWidget {
   const DeviceScanningPage({
@@ -146,6 +148,32 @@ class _DeviceScanningPageState extends ConsumerState<DeviceScanningPage> {
     }
   }
 
+  Future<bool> _ensureLockClaimed({
+    required String deviceId,
+    required String displayName,
+  }) async {
+    if (await PairingService.isPaired(deviceId)) {
+      return true;
+    }
+
+    if (!mounted) return false;
+
+    final claimed = await showClaimLockDialog(
+      context,
+      deviceId: deviceId,
+      displayName: displayName,
+    );
+
+    if (claimed != true) {
+      await BleService.resetDeviceConnection(deviceId);
+      _connectSessionActive = false;
+      return false;
+    }
+
+    await PairingService.claimLock(deviceId);
+    return true;
+  }
+
   Future<void> _registerAndFinishConnection({
     required ScanResult scanResult,
     required String token,
@@ -156,6 +184,12 @@ class _DeviceScanningPageState extends ConsumerState<DeviceScanningPage> {
     final deviceId = scanResult.device.remoteId.str;
     final displayName = LockConnectionHelper.defaultDisplayName(scanResult.device);
     final hardwareName = LockConnectionHelper.hardwareName(scanResult.device);
+
+    final claimed = await _ensureLockClaimed(
+      deviceId: deviceId,
+      displayName: displayName,
+    );
+    if (!claimed || !mounted) return;
 
     await ref.read(savedLocksProvider.notifier).registerConnectedLock(
           deviceId: deviceId,

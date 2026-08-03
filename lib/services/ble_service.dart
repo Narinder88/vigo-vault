@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:fitness_snack_lock/services/data_service.dart';
+import 'package:fitness_snack_lock/services/pairing_service.dart';
 
 class BleService {
   static String currentEncryptKey = DataRequestPattern.latestEncryptKey;
@@ -1018,6 +1019,8 @@ class BleService {
   }
 
   static Future<bool> requestToUnlock(String deviceId) async {
+    await PairingService.ensurePairedForUnlock(deviceId);
+
     final token = _deviceTokens[deviceId] ??
         await BleService.getToken(deviceId, ignoreConnect: true);
 
