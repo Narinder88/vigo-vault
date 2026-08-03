@@ -32,7 +32,7 @@ Future<bool?> showClaimLockDialog(
             ),
             const SizedBox(height: 16),
             Text(
-              'Save "$displayName" to this device so only you can unlock it from this phone.',
+              'Claim and provision a unique ownership secret for "$displayName" on this phone.',
               style: const TextStyle(height: 1.4),
             ),
             const SizedBox(height: 12),
@@ -70,6 +70,29 @@ Future<void> showPairingRequiredDialog(BuildContext context) {
         title: const Text('Lock Not Paired'),
         content: const Text(
           'This lock has not been claimed on this device. Connect and claim the lock before trying to unlock.',
+        ),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('OK'),
+          ),
+        ],
+      );
+    },
+  );
+}
+
+/// Shown when the lock rejects the stored ownership secret.
+Future<void> showLockAuthenticationDialog(BuildContext context) {
+  return showDialog<void>(
+    context: context,
+    builder: (dialogContext) {
+      return AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text('Authentication Failed'),
+        content: const Text(
+          'The lock rejected the ownership secret for this device. '
+          'Remove the lock and claim it again to provision a new secret key.',
         ),
         actions: [
           FilledButton(

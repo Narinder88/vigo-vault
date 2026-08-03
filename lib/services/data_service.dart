@@ -20,15 +20,27 @@ class DataRequestPattern {
     return "02010101${token}0000000000000000";
   }
 
-  static String getUnlockHex(String token) {
-    return "050106303030303030${token}000001";
+  static String getUnlockHex(String token, {required String secretKeyHex}) {
+    final normalizedSecret = secretKeyHex.toLowerCase();
+    return "050106303030303030$token$normalizedSecret" "000001";
   }
 
-  static (String first, String last) getSecretKey(
+  /// Provisions a 16-byte ownership secret to firmware in two BLE writes.
+  static (String first, String last) getSecretKeyProvisioningPayloads(
     String token,
-    String value,
+    String secretKeyHex,
   ) {
-    return ('070108$value${token}00', '070208$value${token}00');
+    final normalized = secretKeyHex.toLowerCase();
+    if (normalized.length != 32) {
+      throw ArgumentError('Secret key must be 32 hex characters.');
+    }
+
+    final firstHalf = normalized.substring(0, 16);
+    final secondHalf = normalized.substring(16, 32);
+    return (
+      '070108$firstHalf$token' '00',
+      '070208$secondHalf$token' '00',
+    );
   }
 }
 

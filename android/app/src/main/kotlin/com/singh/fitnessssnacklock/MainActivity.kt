@@ -48,6 +48,45 @@ class MainActivity : FlutterFragmentActivity() {
                         result.success(storage.getPairedIds().toList())
                     }
 
+                    "getSecretKey" -> {
+                        val deviceId = call.argument<String>("deviceId")
+                        if (deviceId.isNullOrBlank()) {
+                            result.error("invalid_argument", "deviceId is required", null)
+                            return@setMethodCallHandler
+                        }
+                        result.success(storage.getSecretKey(deviceId))
+                    }
+
+                    "saveSecretKey" -> {
+                        val deviceId = call.argument<String>("deviceId")
+                        val secretKey = call.argument<String>("secretKey")
+                        if (deviceId.isNullOrBlank() || secretKey.isNullOrBlank()) {
+                            result.error("invalid_argument", "deviceId and secretKey are required", null)
+                            return@setMethodCallHandler
+                        }
+                        storage.saveSecretKey(deviceId, secretKey)
+                        result.success(null)
+                    }
+
+                    "removeSecretKey" -> {
+                        val deviceId = call.argument<String>("deviceId")
+                        if (deviceId.isNullOrBlank()) {
+                            result.error("invalid_argument", "deviceId is required", null)
+                            return@setMethodCallHandler
+                        }
+                        storage.removeSecretKey(deviceId)
+                        result.success(null)
+                    }
+
+                    "hasSecretKey" -> {
+                        val deviceId = call.argument<String>("deviceId")
+                        if (deviceId.isNullOrBlank()) {
+                            result.error("invalid_argument", "deviceId is required", null)
+                            return@setMethodCallHandler
+                        }
+                        result.success(storage.hasSecretKey(deviceId))
+                    }
+
                     else -> result.notImplemented()
                 }
             }

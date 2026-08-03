@@ -68,6 +68,46 @@ import UIKit
       case "getPairedIds":
         result(Array(storage.getPairedIds()))
 
+      case "getSecretKey":
+        guard let args = call.arguments as? [String: Any],
+              let deviceId = args["deviceId"] as? String,
+              !deviceId.isEmpty else {
+          result(FlutterError(code: "invalid_argument", message: "deviceId is required", details: nil))
+          return
+        }
+        result(storage.getSecretKey(deviceId: deviceId))
+
+      case "saveSecretKey":
+        guard let args = call.arguments as? [String: Any],
+              let deviceId = args["deviceId"] as? String,
+              let secretKey = args["secretKey"] as? String,
+              !deviceId.isEmpty,
+              !secretKey.isEmpty else {
+          result(FlutterError(code: "invalid_argument", message: "deviceId and secretKey are required", details: nil))
+          return
+        }
+        storage.saveSecretKey(deviceId: deviceId, secretKey: secretKey)
+        result(nil)
+
+      case "removeSecretKey":
+        guard let args = call.arguments as? [String: Any],
+              let deviceId = args["deviceId"] as? String,
+              !deviceId.isEmpty else {
+          result(FlutterError(code: "invalid_argument", message: "deviceId is required", details: nil))
+          return
+        }
+        storage.removeSecretKey(deviceId: deviceId)
+        result(nil)
+
+      case "hasSecretKey":
+        guard let args = call.arguments as? [String: Any],
+              let deviceId = args["deviceId"] as? String,
+              !deviceId.isEmpty else {
+          result(FlutterError(code: "invalid_argument", message: "deviceId is required", details: nil))
+          return
+        }
+        result(storage.hasSecretKey(deviceId: deviceId))
+
       default:
         result(FlutterMethodNotImplemented)
       }

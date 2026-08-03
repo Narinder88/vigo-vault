@@ -198,6 +198,8 @@ class LockConnectionHelper {
       return await BleService.requestToUnlock(deviceId);
     } on PairingRequiredException {
       return false;
+    } on LockAuthenticationException {
+      rethrow;
     }
   }
 

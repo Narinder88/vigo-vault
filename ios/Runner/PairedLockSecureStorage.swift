@@ -2,11 +2,13 @@ import Foundation
 import Security
 
 final class PairedLockSecureStorage {
-    private let service = "com.singh.fitnessssnacklock.paired_locks"
-    private let account = "paired_lock_ids"
+    private let pairedService = "com.singh.fitnessssnacklock.paired_locks"
+    private let pairedAccount = "paired_lock_ids"
+    private let secretsService = "com.singh.fitnessssnacklock.lock_secrets"
+    private let secretsAccount = "lock_secret_keys"
 
     func getPairedIds() -> Set<String> {
-        guard let data = readKeychainData(),
+        guard let data = readKeychainData(service: pairedService, account: pairedAccount),
               let ids = try? JSONDecoder().decode([String].self, from: data) else {
             return []
         }
@@ -27,13 +29,63 @@ final class PairedLockSecureStorage {
         var ids = getPairedIds()
         ids.remove(deviceId)
         savePairedIds(ids)
+        removeSecretKey(deviceId: deviceId)
+    }
+
+    func getSecretKey(deviceId: String) -> String? {
+        return getSecretKeys()[deviceId]
+    }
+
+    func saveSecretKey(deviceId: String, secretKey: String) {
+        var secrets = getSecretKeys()
+        secrets[deviceId] = secretKey
+        saveSecretKeys(secrets)
+    }
+
+    func removeSecretKey(deviceId: String) {
+        var secrets = getSecretKeys()
+        secrets.removeValue(forKey: deviceId)
+        saveSecretKeys(secrets)
+    }
+
+    func hasSecretKey(deviceId: String) -> Bool {
+        guard let secretKey = getSecretKey(deviceId: deviceId) else {
+            return false
+        }
+        return !secretKey.isEmpty
     }
 
     private func savePairedIds(_ ids: Set<String>) {
         guard let data = try? JSONEncoder().encode(Array(ids)) else {
             return
         }
+        writeKeychainData(
+            data,
+            service: pairedService,
+            account: pairedAccount
+        )
+    }
 
+    private func getSecretKeys() -> [String: String] {
+        guard let data = readKeychainData(service: secretsService, account: secretsAccount),
+              let secrets = try? JSONDecoder().decode([String: String].self, from: data) else {
+            return [:]
+        }
+        return secrets
+    }
+
+    private func saveSecretKeys(_ secrets: [String: String]) {
+        guard let data = try? JSONEncoder().encode(secrets) else {
+            return
+        }
+        writeKeychainData(
+            data,
+            service: secretsService,
+            account: secretsAccount
+        )
+    }
+
+    private func writeKeychainData(_ data: Data, service: String, account: String) {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -56,7 +108,7 @@ final class PairedLockSecureStorage {
         }
     }
 
-    private func readKeychainData() -> Data? {
+    private func readKeychainData(service: String, account: String) -> Data? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,

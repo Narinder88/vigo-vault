@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:fitness_snack_lock/services/data_service.dart';
+import 'package:fitness_snack_lock/services/lock_secret_storage.dart';
 import 'package:fitness_snack_lock/services/pairing_service.dart';
 
 class BleService {
@@ -1018,30 +1019,151 @@ class BleService {
     }
   }
 
+  static List<int>? _decryptLockResponse(String deviceId, List<int> response) {
+    if (response.isEmpty) return null;
+
+    final hexResponse = DataService.bytesToHexString(response);
+    if (hexResponse.length < 32) return null;
+
+    return DataService.decrypt(
+      hexResponse.substring(0, 32),
+      _encryptKeyFor(deviceId),
+    );
+  }
+
+  static bool _isAuthFailureResponse(String deviceId, List<int> response) {
+    final decrypted = _decryptLockResponse(deviceId, response);
+    if (decrypted == null || decrypted.length < 4) {
+      return true;
+    }
+
+    final status = decrypted[3];
+    return status == 0x00 || status == 0xFF;
+  }
+
+  static bool _isUnlockAck(String deviceId, List<int> response) {
+    final decrypted = _decryptLockResponse(deviceId, response);
+    if (decrypted == null || decrypted.length < 4) {
+      return false;
+    }
+
+    return decrypted[0] == 0x05 &&
+        decrypted[1] == 0x01 &&
+        decrypted[3] != 0x00 &&
+        decrypted[3] != 0xFF;
+  }
+
+  static bool _isProvisionAck(String deviceId, List<int> response) {
+    final decrypted = _decryptLockResponse(deviceId, response);
+    if (decrypted == null || decrypted.length < 4) {
+      return false;
+    }
+
+    return decrypted[0] == 0x07 &&
+        decrypted[3] != 0x00 &&
+        decrypted[3] != 0xFF;
+  }
+
+  static Future<List<int>> _sendLockCommandAndReadResponse(
+    String deviceId,
+    String payload,
+  ) async {
+    final device = BluetoothDevice.fromId(deviceId);
+    final characteristic = await _findLockCharacteristic(device);
+    if (characteristic == null) {
+      throw LockAuthenticationException(
+        deviceId,
+        message: 'Lock characteristic unavailable.',
+      );
+    }
+
+    final previousValue = List<int>.from(characteristic.lastValue);
+    await writeData(deviceId, payload);
+
+    var response = await _awaitLockCharacteristicValue(
+      characteristic,
+      previousValue,
+    );
+
+    if (response.isEmpty) {
+      response = await _readLockCharacteristic(characteristic);
+    }
+
+    return response;
+  }
+
+  static Future<void> provisionSecretKey({
+    required String deviceId,
+    required String secretKey,
+    required String token,
+  }) async {
+    if (_isInvalidToken(token)) {
+      throw LockAuthenticationException(
+        deviceId,
+        message: 'Invalid session token for provisioning.',
+      );
+    }
+
+    final payloads = DataRequestPattern.getSecretKeyProvisioningPayloads(
+      token,
+      secretKey,
+    );
+
+    for (final payload in [payloads.$1, payloads.$2]) {
+      final response = await _sendLockCommandAndReadResponse(deviceId, payload);
+      if (_isAuthFailureResponse(deviceId, response) ||
+          !_isProvisionAck(deviceId, response)) {
+        throw LockAuthenticationException(
+          deviceId,
+          message: 'Failed to provision ownership secret to the lock.',
+        );
+      }
+    }
+  }
+
   static Future<bool> requestToUnlock(String deviceId) async {
     await PairingService.ensurePairedForUnlock(deviceId);
+
+    final secretKey = await LockSecretStorage.getSecretKey(deviceId);
+    if (secretKey == null || secretKey.isEmpty) {
+      throw LockAuthenticationException(
+        deviceId,
+        message: 'No ownership secret found for this lock.',
+      );
+    }
 
     final token = _deviceTokens[deviceId] ??
         await BleService.getToken(deviceId, ignoreConnect: true);
 
-    try {
-      await Future.delayed(Duration(seconds: 1));
-      await writeData(deviceId, DataRequestPattern.getUnlockHex(token));
-      await BleService.readData(deviceId);
-      return true;
-    } catch (e) {
-      return false;
+    if (_isInvalidToken(token)) {
+      throw LockAuthenticationException(
+        deviceId,
+        message: 'Invalid session token for unlock.',
+      );
     }
+
+    await Future.delayed(const Duration(seconds: 1));
+    final response = await _sendLockCommandAndReadResponse(
+      deviceId,
+      DataRequestPattern.getUnlockHex(
+        token,
+        secretKeyHex: secretKey,
+      ),
+    );
+
+    if (_isAuthFailureResponse(deviceId, response) ||
+        !_isUnlockAck(deviceId, response)) {
+      throw LockAuthenticationException(deviceId);
+    }
+
+    return true;
   }
 
   static Future<bool> connectAndUnLock(String deviceId) async {
     final isConnected = await BleService.connect(deviceId);
     if (!isConnected) throw Exception('Cannot connect to the Smart Lock');
 
-    final isUnlocked = await BleService.requestToUnlock(deviceId);
-    if (!isUnlocked) throw Exception('Cannot unlock the Smart Lock');
-
-    return isUnlocked;
+    return BleService.requestToUnlock(deviceId);
   }
 
   static Future<int> _fetchBatteryLevel(String deviceId, String token) async {

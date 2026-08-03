@@ -13,6 +13,7 @@ import 'package:simple_ripple_animation/simple_ripple_animation.dart';
 import '../../../providers/notification_manager_provider.dart';
 import '../../../providers/saved_locks_provider.dart';
 import '../../../services/ble_service.dart';
+import '../../../services/lock_auth_service.dart';
 import '../../../services/lock_connection_helper.dart';
 import '../../../services/pairing_service.dart';
 import '../../../widgets/claim_lock_dialog.dart';
@@ -151,8 +152,11 @@ class _DeviceScanningPageState extends ConsumerState<DeviceScanningPage> {
   Future<bool> _ensureLockClaimed({
     required String deviceId,
     required String displayName,
+    required String sessionToken,
   }) async {
-    if (await PairingService.isPaired(deviceId)) {
+    final alreadyPaired = await PairingService.isPaired(deviceId);
+    final hasSecret = await PairingService.hasOwnershipSecret(deviceId);
+    if (alreadyPaired && hasSecret) {
       return true;
     }
 
@@ -170,8 +174,19 @@ class _DeviceScanningPageState extends ConsumerState<DeviceScanningPage> {
       return false;
     }
 
-    await PairingService.claimLock(deviceId);
-    return true;
+    try {
+      await LockAuthService.claimAndProvisionLock(
+        deviceId: deviceId,
+        sessionToken: sessionToken,
+      );
+      return true;
+    } on LockAuthenticationException {
+      await BleService.resetDeviceConnection(deviceId);
+      _connectSessionActive = false;
+      if (!mounted) return false;
+      await showLockAuthenticationDialog(context);
+      return false;
+    }
   }
 
   Future<void> _registerAndFinishConnection({
@@ -188,6 +203,7 @@ class _DeviceScanningPageState extends ConsumerState<DeviceScanningPage> {
     final claimed = await _ensureLockClaimed(
       deviceId: deviceId,
       displayName: displayName,
+      sessionToken: token,
     );
     if (!claimed || !mounted) return;
 
