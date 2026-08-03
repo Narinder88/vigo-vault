@@ -26,10 +26,6 @@
 		<string>$(FLUTTER_BUILD_NUMBER)</string>
 		<key>LSRequiresIPhoneOS</key>
 		<true/>
-		<key>NSHealthShareUsageDescription</key>
-		<string>We'll take health data like steps and calories using Apple Health and calculate it against the daily goals.</string>
-		<key>NSHealthUpdateUsageDescription</key>
-		<string>We'll take health data like steps and calories using Apple Health and calculate it against the daily goals.</string>
 		<key>UIApplicationSupportsIndirectInputEvents</key>
 		<true/>
 		<key>UILaunchStoryboardName</key>
