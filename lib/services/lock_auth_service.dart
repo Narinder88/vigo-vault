@@ -15,6 +15,7 @@ class LockAuthService {
       token: sessionToken,
     );
     await LockSecretStorage.saveSecretKey(deviceId, secretKey);
+    BleService.cacheDeviceEncryptKey(deviceId, secretKey);
     await PairedLockStorage.pair(deviceId);
   }
 }
