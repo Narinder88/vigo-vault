@@ -25,13 +25,11 @@ class HomePage extends ConsumerStatefulWidget {
     required this.onUnlockSuccess,
     this.lockDeviceId,
     this.onBackToDashboard,
-    this.autoUnlockOnOpen = false,
   });
 
   final VoidCallback onUnlockSuccess;
   final String? lockDeviceId;
   final VoidCallback? onBackToDashboard;
-  final bool autoUnlockOnOpen;
 
   @override
   ConsumerState<HomePage> createState() => _HomePageState();
@@ -51,7 +49,6 @@ class _HomePageState extends ConsumerState<HomePage>
 
   bool _isUnlocked = false;
   bool _isUnlocking = false;
-  bool _autoUnlockHandled = false;
 
   late AnimationController _pulseController;
   late AnimationController _spinController;
@@ -71,44 +68,57 @@ class _HomePageState extends ConsumerState<HomePage>
     _pulseAnimation = Tween<double>(begin: 1.0, end: 1.1).animate(
       CurvedAnimation(parent: _pulseController, curve: Curves.easeInOut),
     );
-    _loadSavedDeviceName();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      unawaited(_maybeAutoUnlockOnOpen());
+      unawaited(_syncDetailViewSession());
     });
   }
 
-  Future<void> _maybeAutoUnlockOnOpen() async {
-    if (!widget.autoUnlockOnOpen || _autoUnlockHandled || !mounted) return;
-
+  /// Keeps the detail screen on the connected UI when BLE is already linked.
+  Future<void> _syncDetailViewSession() async {
     final lockId = widget.lockDeviceId;
-    if (lockId == null) return;
+    if (lockId == null || !mounted) return;
 
-    // Brief pause so the user sees the red "Lock Closed" state first.
-    await Future<void>.delayed(const Duration(milliseconds: 500));
-    if (!mounted || _autoUnlockHandled) return;
+    final currentDeviceId = ref.read(bleProvider).device?.remoteId.str;
+    if (currentDeviceId == lockId) return;
 
-    if (!LockConnectionHelper.isPreConnected(lockId)) {
-      final restored = await LockConnectionHelper.connectAndRestoreSession(
-        deviceId: lockId,
-        bleNotifier: ref.read(bleProvider.notifier),
-        locksNotifier: ref.read(savedLocksProvider.notifier),
-        notificationManager: ref.read(notificationManagerProvider.notifier),
-      );
-      if (!restored || !mounted) return;
+    if (!LockConnectionHelper.isPreConnected(lockId)) return;
+    if (!LockConnectionHelper.isValidToken(BleService.tokenForDevice(lockId))) {
+      return;
     }
 
-    _autoUnlockHandled = true;
-    await _handleLockTap(lockId, preferExistingConnection: true);
+    await LockConnectionHelper.connectAndRestoreSession(
+      deviceId: lockId,
+      bleNotifier: ref.read(bleProvider.notifier),
+      locksNotifier: ref.read(savedLocksProvider.notifier),
+      notificationManager: ref.read(notificationManagerProvider.notifier),
+      switchConnection: false,
+      background: true,
+    );
   }
 
-  Future<void> _loadSavedDeviceName() async {
-    final lockId = widget.lockDeviceId ?? ref.read(bleProvider).device?.remoteId.str;
-    if (lockId == null) return;
+  String? _resolvedLockId(BluetoothDevice? device) {
+    return widget.lockDeviceId ?? device?.remoteId.str;
+  }
 
-    final savedLock = ref.read(savedLocksProvider.notifier).lockById(lockId);
-    if (!mounted || savedLock == null) return;
+  String? _savedDisplayName(String? lockId) {
+    if (lockId == null) return null;
+    return ref.read(savedLocksProvider.notifier).lockById(lockId)?.displayName;
+  }
 
-    ref.read(bleProvider.notifier).setCustomDeviceName(savedLock.displayName);
+  String _headerTitle(BluetoothDevice? device, BleData bleState) {
+    final savedName = _savedDisplayName(_resolvedLockId(device));
+    if (savedName != null && savedName.isNotEmpty) return savedName;
+
+    final customName = bleState.customDeviceName;
+    if (customName != null && customName.isNotEmpty) return customName;
+    if (device != null) return _hardwareName(device);
+    return _defaultLockTitle;
+  }
+
+  String _deviceLabel(BleData bleState, {BluetoothDevice? device}) {
+    final savedName = _savedDisplayName(_resolvedLockId(device));
+    if (savedName != null && savedName.isNotEmpty) return savedName;
+    return bleState.customDeviceName ?? _defaultDeviceLabel;
   }
 
   @override
@@ -124,17 +134,6 @@ class _HomePageState extends ConsumerState<HomePage>
     if (device.advName.isNotEmpty) return device.advName;
     if (device.platformName.isNotEmpty) return device.platformName;
     return _defaultLockTitle;
-  }
-
-  String _headerTitle(BluetoothDevice? device, BleData bleState) {
-    final customName = bleState.customDeviceName;
-    if (customName != null && customName.isNotEmpty) return customName;
-    if (device != null) return _hardwareName(device);
-    return _defaultLockTitle;
-  }
-
-  String _deviceLabel(BleData bleState) {
-    return bleState.customDeviceName ?? _defaultDeviceLabel;
   }
 
   Future<void> _saveCustomDeviceName(String name) async {
@@ -231,6 +230,7 @@ class _HomePageState extends ConsumerState<HomePage>
   Future<void> _handleLockTap(
     String deviceId, {
     bool preferExistingConnection = false,
+    bool forceFreshUnlock = true,
   }) async {
     if (_isUnlocking) return;
 
@@ -238,17 +238,13 @@ class _HomePageState extends ConsumerState<HomePage>
     _startUnlockAnimation();
 
     try {
-      if (!await PairingService.isPaired(deviceId)) {
-        if (!mounted) return;
-        await showPairingRequiredDialog(context);
-        return;
-      }
-
       final bool isUnlocked;
       if (preferExistingConnection &&
           LockConnectionHelper.isPreConnected(deviceId)) {
-        isUnlocked =
-            await LockConnectionHelper.unlockPreConnectedLock(deviceId);
+        isUnlocked = await LockConnectionHelper.unlockPreConnectedLock(
+          deviceId,
+          forceFresh: forceFreshUnlock,
+        );
       } else {
         isUnlocked = await BleService.connectAndUnLock(deviceId);
       }
@@ -259,13 +255,7 @@ class _HomePageState extends ConsumerState<HomePage>
         setState(() => _isUnlocked = true);
         widget.onUnlockSuccess();
         await ref.read(inAppReviewProvider.notifier).countUp();
-      } else if (!await PairingService.isPaired(deviceId)) {
-        if (!mounted) return;
-        await showPairingRequiredDialog(context);
       }
-    } on PairingRequiredException {
-      if (!mounted) return;
-      await showPairingRequiredDialog(context);
     } on LockAuthenticationException {
       if (!mounted) return;
       await showLockAuthenticationDialog(context);
@@ -292,7 +282,7 @@ class _HomePageState extends ConsumerState<HomePage>
     final isConnected = device != null;
     final battery = bleState.batteryLevel > 0 ? bleState.batteryLevel : 0;
     final rssi = bleState.rssi;
-    final deviceLabel = _deviceLabel(bleState);
+    final deviceLabel = _deviceLabel(bleState, device: device);
 
     return Drawer(
       backgroundColor: const Color(0xFF1A1B1E),
@@ -433,6 +423,7 @@ class _HomePageState extends ConsumerState<HomePage>
 
   @override
   Widget build(BuildContext context) {
+    ref.watch(savedLocksProvider);
     final bleState = ref.watch(bleProvider);
 
     return SmartLockConnector(
@@ -452,17 +443,22 @@ class _HomePageState extends ConsumerState<HomePage>
                   onBackTap: widget.onBackToDashboard,
                 ),
                 _LockSubHeader(
-                  deviceLabel: _deviceLabel(bleState).toUpperCase(),
+                  deviceLabel: _deviceLabel(bleState, device: device).toUpperCase(),
                   batteryLevel: displayBattery,
                 ),
                 Expanded(
                   child: Center(
-                    child: _CentralLockButton(
-                      isUnlocked: _isUnlocked,
-                      isUnlocking: _isUnlocking,
-                      pulseAnimation: _pulseAnimation,
-                      spinController: _spinController,
-                      onTap: () => _handleLockTap(device.remoteId.str),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        _CentralLockButton(
+                          isUnlocked: _isUnlocked,
+                          isUnlocking: _isUnlocking,
+                          pulseAnimation: _pulseAnimation,
+                          spinController: _spinController,
+                          onTap: () => _handleLockTap(device.remoteId.str),
+                        ),
+                      ],
                     ),
                   ),
                 ),

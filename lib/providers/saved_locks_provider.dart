@@ -193,9 +193,7 @@ class SavedLocksNotifier extends StateNotifier<SavedLocksState> {
     int? batteryLevel,
     int? rssi,
   }) async {
-    if (!await PairingService.isPaired(deviceId)) {
-      return;
-    }
+    await PairingService.registerLock(deviceId);
 
     final existing = lockById(deviceId);
     final lock = (existing ??

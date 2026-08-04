@@ -13,10 +13,7 @@ import 'package:simple_ripple_animation/simple_ripple_animation.dart';
 import '../../../providers/notification_manager_provider.dart';
 import '../../../providers/saved_locks_provider.dart';
 import '../../../services/ble_service.dart';
-import '../../../services/lock_auth_service.dart';
 import '../../../services/lock_connection_helper.dart';
-import '../../../services/pairing_service.dart';
-import '../../../widgets/claim_lock_dialog.dart';
 
 class DeviceScanningPage extends ConsumerStatefulWidget {
   const DeviceScanningPage({
@@ -37,10 +34,13 @@ class _DeviceScanningPageState extends ConsumerState<DeviceScanningPage> {
   final isConnectingNotifier = ValueNotifier<bool>(false);
   bool _scanStopped = false;
   bool _connectSessionActive = false;
+  Set<String> _savedLockIds = {};
 
   @override
   void initState() {
     super.initState();
+
+    unawaited(_refreshSavedLockIds());
 
     Future.delayed(Duration.zero, () async {
       if (!mounted || _connectSessionActive || _scanStopped) return;
@@ -106,22 +106,16 @@ class _DeviceScanningPageState extends ConsumerState<DeviceScanningPage> {
     return LockConnectionHelper.isValidToken(token);
   }
 
-  Set<String> _knownLockDeviceIds() {
+  Future<void> _refreshSavedLockIds() async {
     final savedIds = ref.read(savedLocksProvider.notifier).allDeviceIds;
-    final activeDeviceId = ref.read(bleProvider).device?.remoteId.str;
-
-    return {
-      for (final id in savedIds) id,
-      if (activeDeviceId != null && activeDeviceId.isNotEmpty) activeDeviceId,
-    };
+    if (!mounted) return;
+    setState(() => _savedLockIds = savedIds.toSet());
   }
 
   List<ScanResult> _filterScanResults(List<ScanResult> results) {
-    final knownIds = _knownLockDeviceIds();
-
     return results
         .where((e) => e.advertisementData.advName.isNotEmpty)
-        .where((e) => !knownIds.contains(e.device.remoteId.str))
+        .where((e) => !_savedLockIds.contains(e.device.remoteId.str))
         .toList();
   }
 
@@ -163,67 +157,6 @@ class _DeviceScanningPageState extends ConsumerState<DeviceScanningPage> {
     );
   }
 
-  void _showConnectionError(String message) {
-    if (!mounted) return;
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message)),
-    );
-  }
-
-  Future<bool> _ensureLockClaimed({
-    required String deviceId,
-    required String displayName,
-    required String sessionToken,
-    required BuildContext sheetContext,
-  }) async {
-    if (await PairingService.isPaired(deviceId)) {
-      _dismissConnectionSheet(sheetContext);
-      return true;
-    }
-
-    _dismissConnectionSheet(sheetContext);
-
-    if (!mounted) return false;
-
-    final claimed = await showClaimLockDialog(
-      context,
-      deviceId: deviceId,
-      displayName: displayName,
-    );
-
-    if (claimed != true) {
-      await BleService.resetDeviceConnection(deviceId);
-      _connectSessionActive = false;
-      _showConnectionError('Lock claim was cancelled.');
-      return false;
-    }
-
-    try {
-      await LockAuthService.claimAndProvisionLock(
-        deviceId: deviceId,
-        sessionToken: sessionToken,
-      );
-      return true;
-    } on LockAuthenticationException {
-      await BleService.resetDeviceConnection(deviceId);
-      _connectSessionActive = false;
-      if (!mounted) return false;
-      await showLockAuthenticationDialog(context);
-      _showConnectionError(
-        'Could not authenticate with this lock. Please try again.',
-      );
-      return false;
-    } catch (_) {
-      await BleService.resetDeviceConnection(deviceId);
-      _connectSessionActive = false;
-      _showConnectionError(
-        'Claim failed. Please move closer to the lock and try again.',
-      );
-      return false;
-    }
-  }
-
   Future<void> _registerAndFinishConnection({
     required ScanResult scanResult,
     required String token,
@@ -236,13 +169,7 @@ class _DeviceScanningPageState extends ConsumerState<DeviceScanningPage> {
     final hardwareName = LockConnectionHelper.hardwareName(scanResult.device);
 
     try {
-      final claimed = await _ensureLockClaimed(
-        deviceId: deviceId,
-        displayName: displayName,
-        sessionToken: token,
-        sheetContext: sheetContext,
-      );
-      if (!claimed || !mounted) return;
+      _dismissConnectionSheet(sheetContext);
 
       await ref.read(savedLocksProvider.notifier).registerConnectedLock(
             deviceId: deviceId,
@@ -266,6 +193,7 @@ class _DeviceScanningPageState extends ConsumerState<DeviceScanningPage> {
             .createReachBatteryNotification(batteryLevel);
       }
 
+      await _refreshSavedLockIds();
       _connectSessionActive = false;
 
       if (widget.fromDashboard && mounted) {

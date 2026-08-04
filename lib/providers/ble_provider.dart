@@ -9,6 +9,7 @@ typedef BleData = ({
   String? customDeviceName,
   bool isConnecting,
   String? connectingDeviceId,
+  bool requiresClaiming,
 });
 
 final bleProvider = StateNotifierProvider<BleProvider, BleData>((ref) {
@@ -25,6 +26,7 @@ class BleProvider extends StateNotifier<BleData> {
           customDeviceName: null,
           isConnecting: false,
           connectingDeviceId: null,
+          requiresClaiming: false,
         ));
 
   static const deviceUnreachableMessage =
@@ -41,6 +43,7 @@ class BleProvider extends StateNotifier<BleData> {
       customDeviceName: state.customDeviceName,
       isConnecting: state.isConnecting,
       connectingDeviceId: state.connectingDeviceId,
+      requiresClaiming: state.requiresClaiming,
     );
   }
 
@@ -54,6 +57,7 @@ class BleProvider extends StateNotifier<BleData> {
       customDeviceName: state.customDeviceName,
       isConnecting: state.isConnecting,
       connectingDeviceId: state.connectingDeviceId,
+      requiresClaiming: state.requiresClaiming,
     );
   }
 
@@ -68,6 +72,7 @@ class BleProvider extends StateNotifier<BleData> {
       customDeviceName: state.customDeviceName,
       isConnecting: state.isConnecting,
       connectingDeviceId: state.connectingDeviceId,
+      requiresClaiming: state.requiresClaiming,
     );
   }
 
@@ -80,6 +85,20 @@ class BleProvider extends StateNotifier<BleData> {
       customDeviceName: state.customDeviceName,
       isConnecting: state.isConnecting,
       connectingDeviceId: state.connectingDeviceId,
+      requiresClaiming: state.requiresClaiming,
+    );
+  }
+
+  void setRequiresClaiming(bool requiresClaiming) {
+    state = (
+      device: state.device,
+      rssi: state.rssi,
+      batteryLevel: state.batteryLevel,
+      token: state.token,
+      customDeviceName: state.customDeviceName,
+      isConnecting: state.isConnecting,
+      connectingDeviceId: state.connectingDeviceId,
+      requiresClaiming: requiresClaiming,
     );
   }
 
@@ -94,6 +113,7 @@ class BleProvider extends StateNotifier<BleData> {
           (trimmed == null || trimmed.isEmpty) ? null : trimmed,
       isConnecting: state.isConnecting,
       connectingDeviceId: state.connectingDeviceId,
+      requiresClaiming: state.requiresClaiming,
     );
   }
 
@@ -106,6 +126,7 @@ class BleProvider extends StateNotifier<BleData> {
       customDeviceName: state.customDeviceName,
       isConnecting: true,
       connectingDeviceId: deviceId,
+      requiresClaiming: state.requiresClaiming,
     );
   }
 
@@ -118,6 +139,7 @@ class BleProvider extends StateNotifier<BleData> {
       customDeviceName: state.customDeviceName,
       isConnecting: false,
       connectingDeviceId: null,
+      requiresClaiming: state.requiresClaiming,
     );
   }
 
@@ -130,6 +152,7 @@ class BleProvider extends StateNotifier<BleData> {
       customDeviceName: state.customDeviceName,
       isConnecting: false,
       connectingDeviceId: null,
+      requiresClaiming: false,
     );
   }
 
@@ -139,6 +162,7 @@ class BleProvider extends StateNotifier<BleData> {
     int? batteryLevel,
     int? rssi,
     String? customDeviceName,
+    bool requiresClaiming = false,
   }) {
     state = (
       device: device,
@@ -150,6 +174,7 @@ class BleProvider extends StateNotifier<BleData> {
       customDeviceName: customDeviceName ?? state.customDeviceName,
       isConnecting: false,
       connectingDeviceId: null,
+      requiresClaiming: requiresClaiming,
     );
   }
 
@@ -162,6 +187,7 @@ class BleProvider extends StateNotifier<BleData> {
       customDeviceName: state.customDeviceName,
       isConnecting: false,
       connectingDeviceId: null,
+      requiresClaiming: false,
     );
   }
 
@@ -174,6 +200,7 @@ class BleProvider extends StateNotifier<BleData> {
       customDeviceName: state.customDeviceName,
       isConnecting: false,
       connectingDeviceId: null,
+      requiresClaiming: false,
     );
   }
 
@@ -186,6 +213,7 @@ class BleProvider extends StateNotifier<BleData> {
       customDeviceName: state.customDeviceName,
       isConnecting: false,
       connectingDeviceId: null,
+      requiresClaiming: false,
     );
   }
 }

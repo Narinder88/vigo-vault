@@ -95,99 +95,26 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
     );
   }
 
-  Future<void> _openPrimaryLock(SavedLock lock) async {
+  Future<void> _openLock(SavedLock lock) async {
     final bleState = ref.read(bleProvider);
     if (_connectingLockId != null || bleState.isConnecting) return;
 
-    if (!LockConnectionHelper.isPreConnected(lock.id)) {
-      setState(() => _connectingLockId = lock.id);
-      try {
-        final connected = await LockConnectionHelper.connectAndRestoreSession(
-          deviceId: lock.id,
-          bleNotifier: ref.read(bleProvider.notifier),
-          locksNotifier: ref.read(savedLocksProvider.notifier),
-          notificationManager: ref.read(notificationManagerProvider.notifier),
-        );
+    await ref.read(savedLocksProvider.notifier).setActiveLockId(lock.id);
 
-        if (!connected) {
-          if (!mounted) return;
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text(BleProvider.deviceUnreachableMessage),
-              backgroundColor: Color(0xFFFF2020),
-              behavior: SnackBarBehavior.floating,
-            ),
-          );
-          return;
-        }
-      } finally {
-        if (mounted) {
-          setState(() => _connectingLockId = null);
-        }
-      }
-    }
-
-    if (!mounted) return;
-
-    await Navigator.of(context).push(
-      MaterialPageRoute<void>(
-        builder: (context) => LockControlPage(
-          lockId: lock.id,
-          autoUnlockOnOpen: true,
-        ),
-      ),
-    );
-
-    if (!mounted) return;
-    _primaryAutoConnectStarted = false;
-    await _autoConnectPrimaryLock();
-  }
-
-  Future<void> _connectSecondaryLock(SavedLock lock) async {
-    final bleState = ref.read(bleProvider);
-    if (_connectingLockId != null || bleState.isConnecting) return;
-
-    setState(() => _connectingLockId = lock.id);
-
-    var restored = false;
-    try {
-      restored = await LockConnectionHelper.connectAndRestoreSession(
+    // Sync provider with an existing BLE link — connect/handshake only, no unlock.
+    if (LockConnectionHelper.isPreConnected(lock.id) &&
+        LockConnectionHelper.isValidToken(BleService.tokenForDevice(lock.id))) {
+      await LockConnectionHelper.connectAndRestoreSession(
         deviceId: lock.id,
         bleNotifier: ref.read(bleProvider.notifier),
         locksNotifier: ref.read(savedLocksProvider.notifier),
         notificationManager: ref.read(notificationManagerProvider.notifier),
+        switchConnection: false,
+        background: true,
       );
-    } catch (_) {
-      restored = false;
-      ref.read(bleProvider.notifier).markConnectFailed();
-      await BleService.resetDeviceConnection(lock.id);
-    } finally {
-      if (mounted) {
-        setState(() => _connectingLockId = null);
-      }
-      final notifier = ref.read(bleProvider.notifier);
-      if (notifier.value.isConnecting) {
-        notifier.endConnecting();
-      }
     }
 
     if (!mounted) return;
-
-    if (!restored) {
-      final knownIds = ref.read(savedLocksProvider.notifier).allDeviceIds;
-      await BleService.releaseAllDevices(knownIds);
-      ref.read(bleProvider.notifier).clearSession();
-      if (!mounted) return;
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(BleProvider.deviceUnreachableMessage),
-          backgroundColor: Color(0xFFFF2020),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
-      return;
-    }
 
     await Navigator.of(context).push(
       MaterialPageRoute<void>(
@@ -198,19 +125,6 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
     if (!mounted) return;
     _primaryAutoConnectStarted = false;
     await _autoConnectPrimaryLock();
-  }
-
-  Future<void> _openLock(SavedLock lock) async {
-    final bleState = ref.read(bleProvider);
-    if (_connectingLockId != null || bleState.isConnecting) return;
-
-    final locksNotifier = ref.read(savedLocksProvider.notifier);
-    if (locksNotifier.isPrimaryLock(lock.id)) {
-      await _openPrimaryLock(lock);
-      return;
-    }
-
-    await _connectSecondaryLock(lock);
   }
 
   Future<void> _addLock() async {
@@ -501,10 +415,6 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
                     },
                     itemBuilder: (context, index) {
                       final lock = locks[index];
-                      final isPrimary =
-                          ref.read(savedLocksProvider.notifier).isPrimaryLock(
-                                lock.id,
-                              );
                       final isConnected = _isLockConnected(lock);
                       final bleConnectingState = ref.watch(bleProvider);
                       final isConnecting = _connectingLockId == lock.id ||
@@ -519,7 +429,6 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
                         ),
                         child: _LockCard(
                           lock: lock,
-                          isPrimary: isPrimary,
                           isConnected: isConnected,
                           isConnecting: isConnecting,
                           batteryLevel: telemetry.battery,
@@ -539,11 +448,9 @@ class LockControlPage extends ConsumerWidget {
   const LockControlPage({
     super.key,
     required this.lockId,
-    this.autoUnlockOnOpen = false,
   });
 
   final String lockId;
-  final bool autoUnlockOnOpen;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -551,16 +458,10 @@ class LockControlPage extends ConsumerWidget {
       backgroundColor: const Color(0xFF1A1B1E),
       body: HomePage(
         lockDeviceId: lockId,
-        autoUnlockOnOpen: autoUnlockOnOpen,
         onUnlockSuccess: () {
           debugPrint('Lock unlocked successfully!');
         },
-        onBackToDashboard: () async {
-          BleConnectionMonitor.stopMonitoring();
-          final knownIds =
-              ref.read(savedLocksProvider.notifier).allDeviceIds;
-          await BleService.releaseAllDevices(knownIds);
-          ref.read(bleProvider.notifier).clearSession();
+        onBackToDashboard: () {
           if (context.mounted) {
             Navigator.of(context).pop();
           }
@@ -630,7 +531,6 @@ class _EmptyLocksView extends StatelessWidget {
 class _LockCard extends StatelessWidget {
   const _LockCard({
     required this.lock,
-    required this.isPrimary,
     required this.isConnected,
     required this.isConnecting,
     required this.batteryLevel,
@@ -640,7 +540,6 @@ class _LockCard extends StatelessWidget {
   });
 
   final SavedLock lock;
-  final bool isPrimary;
   final bool isConnected;
   final bool isConnecting;
   final int? batteryLevel;
@@ -668,8 +567,8 @@ class _LockCard extends StatelessWidget {
 
   String get _connectionLabel {
     if (isConnecting) return 'Connecting...';
-    if (isPrimary) return 'Tap to unlock';
-    return 'Tap to connect';
+    if (isConnected) return 'Connected';
+    return 'Tap to open';
   }
 
   @override
@@ -721,31 +620,6 @@ class _LockCard extends StatelessWidget {
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                     ),
-                    if (isPrimary) ...[
-                      const SizedBox(height: 4),
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 8,
-                          vertical: 2,
-                        ),
-                        decoration: BoxDecoration(
-                          color: _accentColor.withValues(alpha: 0.14),
-                          borderRadius: BorderRadius.circular(999),
-                          border: Border.all(
-                            color: _accentColor.withValues(alpha: 0.45),
-                          ),
-                        ),
-                        child: const Text(
-                          'Primary',
-                          style: TextStyle(
-                            color: _accentColor,
-                            fontSize: 11,
-                            fontWeight: FontWeight.w700,
-                            letterSpacing: 0.3,
-                          ),
-                        ),
-                      ),
-                    ],
                     const SizedBox(height: 4),
                     Text(
                       lock.hardwareName ?? lock.id,
@@ -765,13 +639,11 @@ class _LockCard extends StatelessWidget {
                         _LockDetailChip(
                           icon: isConnecting
                               ? PhosphorIconsRegular.circleNotch
-                              : (isPrimary && isConnected
+                              : (isConnected
                                   ? PhosphorIconsRegular.bluetooth
                                   : PhosphorIconsRegular.bluetoothSlash),
                           label: _connectionLabel,
-                          color: isPrimary && isConnected
-                              ? _accentColor
-                              : _subtextColor,
+                          color: isConnected ? _accentColor : _subtextColor,
                         ),
                         if (batteryLevel != null)
                           _LockDetailChip(
@@ -779,7 +651,7 @@ class _LockCard extends StatelessWidget {
                             label: '$batteryLevel%',
                             color: _subtextColor,
                           ),
-                        if (isPrimary && isConnected && rssi != null)
+                        if (isConnected && rssi != null)
                           _LockDetailChip(
                             icon: PhosphorIconsRegular.cellSignalHigh,
                             label: formatRssiWithLabel(rssi!),
