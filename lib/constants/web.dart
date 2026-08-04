@@ -1,5 +1,6 @@
 class WebData {
-  static const kPrivacyUrl = 'https://www.fitnesssnacklock.com/privacypolicy';
+  static const kPrivacyUrl =
+      'https://raw.githubusercontent.com/Narinder88/vigo-vault/main/PRIVACY_POLICY.md';
   static const kTermUrl = 'https://www.fitnesssnacklock.com/termsofuse';
   static const kDisableMotionSensorUrl =
       'https://www.youtube.com/shorts/JQQGxKD165Q';
