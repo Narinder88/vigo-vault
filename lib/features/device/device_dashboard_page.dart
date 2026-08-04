@@ -34,6 +34,7 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
   static const _labelColor = Color(0xFFFFFFFF);
   static const _subtextColor = Color(0xFF9E9E9E);
   static const _accentColor = Color(0xFF00E676);
+  static const _disabledColor = Color(0xFF5C5D62);
 
   String? _connectingLockId;
   bool _primaryAutoConnectStarted = false;
@@ -355,6 +356,7 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
   Widget build(BuildContext context) {
     final locksState = ref.watch(savedLocksProvider);
     final locks = locksState.locks;
+    final canAddLock = !locksState.isLoading && locks.isEmpty;
 
     return Container(
       decoration: BoxDecoration(
@@ -382,9 +384,9 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
           ),
         ),
         floatingActionButton: FloatingActionButton.extended(
-          onPressed: _addLock,
-          backgroundColor: _accentColor,
-          foregroundColor: _backgroundColor,
+          onPressed: canAddLock ? _addLock : null,
+          backgroundColor: canAddLock ? _accentColor : _disabledColor,
+          foregroundColor: canAddLock ? _backgroundColor : _subtextColor,
           icon: const Icon(PhosphorIconsRegular.plus),
           label: const Text('Add Lock'),
         ),
