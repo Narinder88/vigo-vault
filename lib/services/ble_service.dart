@@ -2,7 +2,6 @@ import 'dart:async';
 
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:fitness_snack_lock/services/data_service.dart';
-import 'package:fitness_snack_lock/services/lock_secret_storage.dart';
 import 'package:fitness_snack_lock/services/pairing_service.dart';
 
 class BleService {
@@ -11,6 +10,7 @@ class BleService {
   static String? _activeDeviceId;
   static final Map<String, String> _deviceTokens = {};
   static final Map<String, String> _deviceEncryptKeys = {};
+  static final Map<String, bool> _deviceUnlockedThisSession = {};
   static final Map<String, StreamSubscription<List<int>>?>
       _handshakeNotifySubscriptions = {};
 
@@ -25,6 +25,18 @@ class BleService {
   }
 
   static String? tokenForDevice(String deviceId) => _deviceTokens[deviceId];
+
+  static bool requiresClaiming(String deviceId) => false;
+
+  static void clearRequiresClaiming(String deviceId) {}
+
+  static void _logHandshake(String message) {
+    print('BLE Handshake: $message');
+  }
+
+  static void _logUnlock(String message) {
+    print('BLE Unlock: $message');
+  }
 
   static Future<void> _connectionChain = Future.value();
 
@@ -408,6 +420,7 @@ class BleService {
   static void _resetHandshakeState(String deviceId) {
     _deviceTokens.remove(deviceId);
     _deviceEncryptKeys.remove(deviceId);
+    _deviceUnlockedThisSession.remove(deviceId);
     if (_activeDeviceId == deviceId) {
       _activeDeviceId = null;
     }
@@ -434,6 +447,12 @@ class BleService {
   static const Duration _batteryReadTimeout = Duration(seconds: 3);
   static const List<int> _discreteBatteryLevels = [0, 20, 40, 60, 80, 100];
 
+  static String _handshakeEncryptKey(String deviceId) {
+    return DataRequestPattern.defaultEncryptKey.toLowerCase();
+  }
+
+  static const String _handshakeKeyLabel = 'Default';
+
   static Future<String> _resolveEncryptKey(String deviceId) async {
     final cached = _deviceEncryptKeys[deviceId];
     if (cached != null && cached.isNotEmpty) {
@@ -441,43 +460,24 @@ class BleService {
       return cached;
     }
 
-    final storedSecret = await LockSecretStorage.getSecretKey(deviceId);
-    if (storedSecret != null && storedSecret.isNotEmpty) {
-      cacheDeviceEncryptKey(deviceId, storedSecret);
-      return storedSecret;
-    }
-
-    final defaultKey = DataRequestPattern.getDefaultEncryptKey(deviceId);
-    currentEncryptKey = defaultKey;
-    return defaultKey;
+    final key = _handshakeEncryptKey(deviceId);
+    currentEncryptKey = key;
+    return key;
   }
 
-  static Future<String> _resolveHandshakeEncryptKey(String deviceId) async {
-    if (await LockSecretStorage.hasSecretKey(deviceId)) {
-      final storedSecret = await LockSecretStorage.getSecretKey(deviceId);
-      if (storedSecret != null && storedSecret.isNotEmpty) {
-        return storedSecret;
-      }
+  static Future<void> _flushStaleNotifyBuffer(
+    BluetoothCharacteristic notifyCharacteristic,
+  ) async {
+    try {
+      await notifyCharacteristic
+          .setNotifyValue(false)
+          .timeout(_handshakeTimeout);
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+      await notifyCharacteristic.setNotifyValue(true).timeout(_handshakeTimeout);
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+    } catch (error) {
+      _logHandshake('36F6 notify flush warning: $error');
     }
-
-    return DataRequestPattern.defaultEncryptKey;
-  }
-
-  static Future<List<String>> _handshakeDecryptKeys(String deviceId) async {
-    final keys = <String>[];
-    final handshakeKey = await _resolveHandshakeEncryptKey(deviceId);
-    keys.add(handshakeKey);
-
-    if (handshakeKey != DataRequestPattern.defaultEncryptKey) {
-      keys.add(DataRequestPattern.defaultEncryptKey);
-    }
-
-    final macDefaultKey = DataRequestPattern.getDefaultEncryptKey(deviceId);
-    if (!keys.contains(macDefaultKey)) {
-      keys.add(macDefaultKey);
-    }
-
-    return keys;
   }
 
   static BluetoothService? _findLockService(List<BluetoothService> services) {
@@ -569,7 +569,7 @@ class BleService {
   }
 
   static bool _isInvalidToken(String? token) {
-    return token == null || token == DataRequestPattern.defaultTokenHex;
+    return token == null || token.isEmpty;
   }
 
   static bool _isValidToken(String? token) {
@@ -590,6 +590,7 @@ class BleService {
     required BluetoothCharacteristic writeCharacteristic,
     String? encryptKey,
     int writeTimeout = 3,
+    String? debugLabel,
   }) async {
     final resolvedKey = encryptKey ?? await _resolveEncryptKey(deviceId);
     final encryptedData = DataService.encrypt(frameHex, resolvedKey);
@@ -597,6 +598,14 @@ class BleService {
       throw LockAuthenticationException(
         deviceId,
         message: 'Failed to encrypt BLE command frame.',
+      );
+    }
+
+    if (debugLabel != null) {
+      _logUnlock(
+        '36F5 write [$debugLabel] plaintext=$frameHex '
+        'encryptKey=${resolvedKey.substring(0, 8)}... '
+        'encrypted=[${encryptedData.map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ')}]',
       );
     }
 
@@ -611,30 +620,47 @@ class BleService {
 
   static Future<void> _writeTokenChallenge(
     String deviceId,
-    BluetoothCharacteristic writeCharacteristic,
-  ) async {
-    final handshakeKey = await _resolveHandshakeEncryptKey(deviceId);
+    BluetoothCharacteristic writeCharacteristic, {
+    required String encryptKey,
+    required String encryptKeyLabel,
+  }) async {
+    _logHandshake(
+      'Writing 06 01 to 36F5 encrypted with $encryptKeyLabel key '
+      '(${encryptKey.substring(0, 8)}...)',
+    );
     await _writeEncryptedFrame(
       deviceId,
       DataRequestPattern.getTokenRequestHex(),
       writeCharacteristic: writeCharacteristic,
-      encryptKey: handshakeKey,
+      encryptKey: encryptKey,
       writeTimeout: _handshakeTimeout.inSeconds,
     );
   }
 
-  static Future<List<int>?> _readFreshTokenResponse(String deviceId) async {
+  static Future<List<int>?> _readFreshTokenResponse(
+    String deviceId, {
+    required String encryptKey,
+    required String encryptKeyLabel,
+  }) async {
     try {
-      return await _readFreshTokenResponseInternal(deviceId).timeout(
+      return await _readFreshTokenResponseInternal(
+        deviceId,
+        encryptKey: encryptKey,
+        encryptKeyLabel: encryptKeyLabel,
+      ).timeout(
         _handshakeTimeout,
         onTimeout: () {
           throw TimeoutException('Token handshake timed out');
         },
       );
     } on TimeoutException {
+      _logHandshake('Timed out waiting for 36F6 response ($encryptKeyLabel write key)');
       await _cancelHandshakeSubscriptions(deviceId);
       return null;
-    } catch (_) {
+    } catch (error) {
+      _logHandshake(
+        'Handshake read failed ($encryptKeyLabel write key): $error',
+      );
       await _cancelHandshakeSubscriptions(deviceId);
       return null;
     }
@@ -642,8 +668,10 @@ class BleService {
 
   /// Handshake: enable CCCD → settle → listen → write challenge → await notify.
   static Future<List<int>?> _readFreshTokenResponseInternal(
-    String deviceId,
-  ) async {
+    String deviceId, {
+    required String encryptKey,
+    required String encryptKeyLabel,
+  }) async {
     await _cancelHandshakeSubscriptions(deviceId);
 
     final device = BluetoothDevice.fromId(deviceId);
@@ -660,27 +688,39 @@ class BleService {
 
     StreamSubscription<List<int>>? subscription;
     try {
-      // 1. Enable notifications on the lock characteristic.
       await notifyCharacteristic.setNotifyValue(true).timeout(_handshakeTimeout);
+      await _flushStaleNotifyBuffer(notifyCharacteristic);
 
-      // 2. Let peripheral hardware finish processing the CCCD descriptor.
-      await Future<void>.delayed(const Duration(milliseconds: 500));
-
-      // 3. Listen for new notifications only (not cached lastValueStream replay).
       final completer = Completer<List<int>>();
+      var acceptNotifications = false;
       subscription = notifyCharacteristic.onValueReceived.listen((value) {
-        if (value.isEmpty || completer.isCompleted) return;
+        if (value.isEmpty || completer.isCompleted || !acceptNotifications) {
+          return;
+        }
         completer.complete(List<int>.from(value));
       });
       _handshakeNotifySubscriptions[deviceId] = subscription;
 
-      // 4. Write command 06 01 to characteristic 36F5 (encrypted).
-      await _writeTokenChallenge(deviceId, writeCharacteristic);
+      await _writeTokenChallenge(
+        deviceId,
+        writeCharacteristic,
+        encryptKey: encryptKey,
+        encryptKeyLabel: encryptKeyLabel,
+      );
+      acceptNotifications = true;
+      _logHandshake(
+        '36F6 listening for first post-write notify ($encryptKeyLabel write key)',
+      );
 
-      // 5. Await the lock's response notification.
       final response = await completer.future.timeout(
         _handshakeNotifyTimeout,
         onTimeout: () => throw TimeoutException('Token handshake timed out'),
+      );
+
+      final rawHex = DataService.bytesToHexString(response);
+      _logHandshake(
+        '36F6 raw response (${response.length} bytes, $encryptKeyLabel write key): '
+        '$rawHex',
       );
       return response;
     } finally {
@@ -689,21 +729,79 @@ class BleService {
     }
   }
 
-  static String? _parseTokenWithKey(List<int> response, String encryptKey) {
+  static ({String? token, String decryptKeyLabel, bool usedDefaultKey})?
+      _parseTokenWithKey(
+    List<int> response,
+    String encryptKey,
+    String decryptKeyLabel,
+  ) {
     if (response.isEmpty) return null;
 
-    final hexResponse = DataService.bytesToHexString(response);
-    if (hexResponse.length < 32) return null;
+    if (DataService.isFramedSuffixNotify(response)) {
+      _logHandshake(
+        '$decryptKeyLabel key: framed notify layout '
+        '${DataService.describeFramedNotify(response)}',
+      );
+    }
 
-    final decryptedResponse = DataService.decrypt(
-      hexResponse.substring(0, 32),
-      encryptKey,
-    );
-    if (decryptedResponse == null) return null;
+    final sliceCandidates = DataService.aesCiphertextBlockCandidates(response);
 
-    final token = DataRequestPattern.parseSessionToken(decryptedResponse);
-    if (_isInvalidToken(token)) return null;
-    return token;
+    for (final candidate in sliceCandidates) {
+      final block = candidate.block;
+      final ciphertextHex = DataService.bytesListToHexString(block);
+
+      _logHandshake(
+        '$decryptKeyLabel key: trying AES candidate ${candidate.label} '
+        'block=$ciphertextHex from ${response.length}-byte notify '
+        '(raw=${DataService.bytesToHexString(response)})',
+      );
+
+      final decryptedResponse = DataService.decrypt(ciphertextHex, encryptKey);
+      if (decryptedResponse == null) {
+        _logHandshake(
+          '$decryptKeyLabel key: AES decrypt failed for $ciphertextHex',
+        );
+        continue;
+      }
+
+      final decryptedHex = DataService.bytesListToHexString(decryptedResponse);
+      _logHandshake(
+        '$decryptKeyLabel key: decrypted frame = $decryptedHex',
+      );
+
+      if (decryptedResponse.length >= 3 &&
+          decryptedResponse[0] == 0x06 &&
+          decryptedResponse[1] == 0x02 &&
+          !DataRequestPattern.verifyTokenResponseChecksum(decryptedResponse)) {
+        final expected =
+            (decryptedResponse[0] + decryptedResponse[1]) & 0xFF;
+        _logHandshake(
+          '$decryptKeyLabel key: checksum advisory mismatch '
+          '(got 0x${decryptedResponse[2].toRadixString(16).padLeft(2, '0')}, '
+          'expected 0x${expected.toRadixString(16).padLeft(2, '0')}) — '
+          'accepting 06 02 token anyway',
+        );
+      }
+
+      final token = DataRequestPattern.parseSessionToken(decryptedResponse);
+      if (_isInvalidToken(token)) {
+        _logHandshake(
+          '$decryptKeyLabel key: invalid or missing 06 02 token in decrypted frame',
+        );
+        continue;
+      }
+
+      _logHandshake(
+        '$decryptKeyLabel key: token parsed successfully ($token)',
+      );
+      return (
+        token: token,
+        decryptKeyLabel: decryptKeyLabel,
+        usedDefaultKey: decryptKeyLabel == 'Default',
+      );
+    }
+
+    return null;
   }
 
   /// Requests a session token using command 06 01 with timeout and retry.
@@ -718,43 +816,49 @@ class BleService {
       }
     }
 
+    final encryptKey = _handshakeEncryptKey(deviceId);
+    const keyLabel = _handshakeKeyLabel;
+    _logHandshake(
+      'Starting token request for $deviceId with $keyLabel key '
+      '(${encryptKey.substring(0, 8)}...)',
+    );
+
     for (var attempt = 0; attempt < _maxHandshakeAttempts; attempt++) {
       if (attempt > 0) {
+        _logHandshake(
+          'Retry ${attempt + 1}/$_maxHandshakeAttempts ($keyLabel key)',
+        );
         await Future<void>.delayed(const Duration(milliseconds: 300));
       }
 
       try {
-        final response = await _readFreshTokenResponse(deviceId);
+        final response = await _readFreshTokenResponse(
+          deviceId,
+          encryptKey: encryptKey,
+          encryptKeyLabel: keyLabel,
+        );
         if (response == null || response.isEmpty) {
           continue;
         }
 
-        final token = await _parseTokenFromResponse(deviceId, response);
-        if (_isValidToken(token)) {
-          _deviceTokens[deviceId] = token!;
-          return token;
+        final parsed = _parseTokenWithKey(response, encryptKey, keyLabel);
+        if (_isValidToken(parsed?.token)) {
+          cacheDeviceEncryptKey(deviceId, encryptKey);
+          _deviceTokens[deviceId] = parsed!.token!;
+          _logHandshake(
+            'Token handshake succeeded for $deviceId — token=${parsed.token}',
+          );
+          return parsed.token;
         }
       } on TimeoutException {
         continue;
-      } catch (_) {
+      } catch (error) {
+        _logHandshake('Attempt failed ($keyLabel key): $error');
         continue;
       }
     }
 
-    return null;
-  }
-
-  static Future<String?> _parseTokenFromResponse(
-    String deviceId,
-    List<int> response,
-  ) async {
-    final keys = await _handshakeDecryptKeys(deviceId);
-    for (final encryptKey in keys) {
-      final token = _parseTokenWithKey(response, encryptKey);
-      if (_isValidToken(token)) {
-        return token;
-      }
-    }
+    _logHandshake('Token request failed after $_maxHandshakeAttempts attempts');
     return null;
   }
 
@@ -782,7 +886,7 @@ class BleService {
       // Fall through to invalid token handling below.
     }
 
-    return DataRequestPattern.defaultTokenHex;
+    return '';
   }
 
   static Future<List<int>> _awaitLockCharacteristicValue(
@@ -854,20 +958,17 @@ class BleService {
   ) {
     if (response.isEmpty) return null;
 
-    final hexResponse = DataService.bytesToHexString(response);
-    if (hexResponse.length < 32) return null;
-
-    final decryptedResponse = DataService.decrypt(
-      hexResponse.substring(0, 32),
-      encryptKey,
+    final resolvedKey = encryptKey.toLowerCase();
+    final decryptedResponse = DataService.decryptNotifyBlock(
+      response,
+      resolvedKey,
+      isValidFrame: (decrypted) =>
+          decrypted.length >= 4 &&
+          decrypted[0] == 2 &&
+          decrypted[1] == 2 &&
+          decrypted[2] == 1,
     );
-    if (decryptedResponse == null || decryptedResponse.length < 4) {
-      return null;
-    }
-
-    if (decryptedResponse[0] != 2 ||
-        decryptedResponse[1] != 2 ||
-        decryptedResponse[2] != 1) {
+    if (decryptedResponse == null) {
       return null;
     }
 
@@ -926,6 +1027,7 @@ class BleService {
     bool ignoreEncryption = false,
     int writeTimeout = 3,
     String? encryptKeyOverride,
+    String? debugLabel,
   }) async {
     try {
       await _writeDataInternal(
@@ -934,6 +1036,7 @@ class BleService {
         ignoreEncryption: ignoreEncryption,
         writeTimeout: writeTimeout,
         encryptKeyOverride: encryptKeyOverride,
+        debugLabel: debugLabel,
       ).timeout(Duration(seconds: writeTimeout));
     } catch (_) {
       return;
@@ -946,6 +1049,7 @@ class BleService {
     required bool ignoreEncryption,
     required int writeTimeout,
     String? encryptKeyOverride,
+    String? debugLabel,
   }) async {
     final device = BluetoothDevice.fromId(deviceId);
     final services = await _discoverServices(device).timeout(
@@ -974,6 +1078,7 @@ class BleService {
       writeCharacteristic: writeCharacteristic,
       encryptKey: encryptKeyOverride,
       writeTimeout: writeTimeout,
+      debugLabel: debugLabel,
     );
   }
 
@@ -1110,13 +1215,14 @@ class BleService {
         forceFresh: true,
       );
       if (!_isValidToken(token)) {
-        print('DEBUG: Handshake failed');
+        _logHandshake('Connect handshake failed — no valid token obtained');
         await _safeDisconnect(device);
         return false;
       }
 
       _deviceTokens[deviceId] = token;
       _activeDeviceId = deviceId;
+
       connected = true;
       return true;
     } on TimeoutException {
@@ -1144,17 +1250,39 @@ class BleService {
     String deviceId,
     List<int> response, {
     String? encryptKey,
+    bool Function(List<int> decrypted)? isValidFrame,
   }) async {
     if (response.isEmpty) return null;
 
-    final hexResponse = DataService.bytesToHexString(response);
-    if (hexResponse.length < 32) return null;
-
-    final resolvedKey = encryptKey ?? await _resolveEncryptKey(deviceId);
-    return DataService.decrypt(
-      hexResponse.substring(0, 32),
-      resolvedKey,
+    final resolvedKey = (encryptKey ?? await _resolveEncryptKey(deviceId))
+        .toLowerCase();
+    return DataService.tryDecryptNotifyCandidates(
+      response,
+      [resolvedKey],
+      isValidFrame: isValidFrame,
     );
+  }
+
+  static bool _isPasswordCommandAck(List<int>? decrypted) {
+    if (decrypted == null || decrypted.length < 3) return false;
+
+    // Manufacturer auth/unlock ack to 05 01 06 command: 05 02 01 RET (RET 0x00 = success).
+    if (decrypted[0] == 0x05 &&
+        decrypted[1] == 0x02 &&
+        decrypted[2] == 0x01 &&
+        decrypted.length >= 4) {
+      return decrypted[3] == 0x00;
+    }
+
+    // Legacy/direct echo ack: 05 01 06 with non-error status byte.
+    if (decrypted[0] == 0x05 &&
+        decrypted[1] == 0x01 &&
+        decrypted[2] == 0x06 &&
+        decrypted.length >= 4) {
+      return decrypted[3] != 0x00 && decrypted[3] != 0xFF;
+    }
+
+    return false;
   }
 
   static Future<bool> _isAuthFailureResponse(
@@ -1162,17 +1290,30 @@ class BleService {
     List<int> response, {
     String? encryptKey,
   }) async {
-    final decrypted = await _decryptLockResponse(
-      deviceId,
-      response,
-      encryptKey: encryptKey,
-    );
-    if (decrypted == null || decrypted.length < 4) {
+    final resolvedKey = (encryptKey ?? await _resolveEncryptKey(deviceId))
+        .toLowerCase();
+
+    for (final candidate in DataService.aesCiphertextBlockCandidates(response)) {
+      final decrypted = DataService.decrypt(
+        DataService.bytesListToHexString(candidate.block),
+        resolvedKey,
+      );
+      if (decrypted == null || decrypted.length < 3) {
+        continue;
+      }
+
+      if (_isPasswordCommandAck(decrypted)) {
+        return false;
+      }
+
+      if (decrypted.length >= 4 && decrypted[3] == 0xFF) {
+        return true;
+      }
+
       return true;
     }
 
-    final status = decrypted[3];
-    return status == 0x00 || status == 0xFF;
+    return true;
   }
 
   static Future<bool> _isUnlockAck(
@@ -1184,126 +1325,177 @@ class BleService {
       deviceId,
       response,
       encryptKey: encryptKey,
+      isValidFrame: _isPasswordCommandAck,
     );
-    if (decrypted == null || decrypted.length < 4) {
-      return false;
-    }
-
-    return decrypted[0] == 0x05 &&
-        decrypted[1] == 0x01 &&
-        decrypted[2] == 0x06 &&
-        decrypted[3] != 0x00 &&
-        decrypted[3] != 0xFF;
+    return _isPasswordCommandAck(decrypted);
   }
 
-  static Future<bool> _isProvisionAck(
-    String deviceId,
-    List<int> response, {
-    String? encryptKey,
-  }) async {
-    final decrypted = await _decryptLockResponse(
-      deviceId,
-      response,
-      encryptKey: encryptKey,
-    );
-    if (decrypted == null || decrypted.length < 3) {
-      return false;
+  static void _logLockResponse(
+    String debugLabel,
+    List<int> response,
+    String decryptKey,
+  ) {
+    if (response.isEmpty) {
+      _logUnlock('$debugLabel: no 36F6 notify received (timeout)');
+      return;
     }
 
-    return decrypted[0] == 0x07 &&
-        (decrypted[1] == 0x01 || decrypted[1] == 0x02) &&
-        (decrypted.length < 4 ||
-            (decrypted[3] != 0x00 && decrypted[3] != 0xFF));
+    final rawHex = DataService.bytesToHexString(response);
+    _logUnlock(
+      '$debugLabel: 36F6 raw response (${response.length} bytes): $rawHex',
+    );
+
+    if (DataService.isFramedSuffixNotify(response)) {
+      _logUnlock(
+        '$debugLabel: framed notify layout '
+        '${DataService.describeFramedNotify(response)}',
+      );
+    }
+
+    final sliceCandidates = DataService.aesCiphertextBlockCandidates(response);
+    for (final candidate in sliceCandidates) {
+      _logUnlock(
+        '$debugLabel: AES candidate ${candidate.label} = '
+        '${DataService.bytesListToHexString(candidate.block)}',
+      );
+    }
+
+    final decrypted = DataService.tryDecryptNotifyCandidates(
+      response,
+      [decryptKey],
+    );
+    if (decrypted != null) {
+      _logUnlock(
+        '$debugLabel: decrypted frame = '
+        '${DataService.bytesListToHexString(decrypted)}',
+      );
+    }
+  }
+
+  static Future<List<int>> _readPostWriteLockResponse(
+    String deviceId, {
+    required String payload,
+    String? encryptKeyOverride,
+    String? debugLabel,
+    Duration timeout = _handshakeNotifyTimeout,
+  }) async {
+    final device = BluetoothDevice.fromId(deviceId);
+    final sessionCharacteristics = await _resolveHandshakeCharacteristics(device);
+    final notifyCharacteristic = sessionCharacteristics.notify;
+    final writeCharacteristic = sessionCharacteristics.write;
+
+    if (notifyCharacteristic == null || writeCharacteristic == null) {
+      _logUnlock('${debugLabel ?? 'command'}: missing 36F5/36F6 characteristics');
+      return <int>[];
+    }
+
+    final resolvedEncryptKey =
+        encryptKeyOverride ?? await _resolveEncryptKey(deviceId);
+    StreamSubscription<List<int>>? subscription;
+    try {
+      await notifyCharacteristic.setNotifyValue(true).timeout(_handshakeTimeout);
+      await _flushStaleNotifyBuffer(notifyCharacteristic);
+      final previousValue = List<int>.from(notifyCharacteristic.lastValue);
+
+      final completer = Completer<List<int>>();
+      var acceptNotifications = false;
+      subscription = notifyCharacteristic.onValueReceived.listen((value) {
+        if (value.isEmpty || completer.isCompleted || !acceptNotifications) {
+          return;
+        }
+        completer.complete(List<int>.from(value));
+      });
+
+      await _writeEncryptedFrame(
+        deviceId,
+        payload,
+        writeCharacteristic: writeCharacteristic,
+        encryptKey: encryptKeyOverride,
+        writeTimeout: _handshakeTimeout.inSeconds,
+        debugLabel: debugLabel,
+      );
+      acceptNotifications = true;
+      _logUnlock(
+        '${debugLabel ?? 'command'}: 36F6 listening for first post-write notify',
+      );
+
+      var response = await completer.future.timeout(
+        timeout,
+        onTimeout: () => <int>[],
+      );
+
+      if (response.isEmpty) {
+        _logUnlock(
+          '${debugLabel ?? 'command'}: no 36F6 notify — trying read/lastValue fallback',
+        );
+        try {
+          response = await _awaitLockCharacteristicValue(
+            notifyCharacteristic,
+            previousValue,
+          );
+        } catch (_) {}
+
+        if (response.isEmpty) {
+          try {
+            response = await _readLockCharacteristic(notifyCharacteristic);
+          } catch (_) {}
+        }
+
+        if (response.isEmpty) {
+          _logUnlock(
+            '${debugLabel ?? 'command'}: no 36F6 notify or read response (timeout)',
+          );
+          return response;
+        }
+
+        _logUnlock(
+          '${debugLabel ?? 'command'}: got 36F6 response via read/lastValue fallback',
+        );
+      }
+
+      _logLockResponse(
+        debugLabel ?? 'command',
+        response,
+        resolvedEncryptKey,
+      );
+
+      return response;
+    } finally {
+      await subscription?.cancel();
+    }
   }
 
   static Future<List<int>> _sendLockCommandAndReadResponse(
     String deviceId,
     String payload, {
     String? encryptKeyOverride,
+    String? debugLabel,
+    Duration timeout = _handshakeNotifyTimeout,
   }) async {
-    final device = BluetoothDevice.fromId(deviceId);
-    final characteristic = await _findLockCharacteristic(device);
-    if (characteristic == null) {
-      throw LockAuthenticationException(
-        deviceId,
-        message: 'Lock notify characteristic unavailable.',
-      );
-    }
-
-    final previousValue = List<int>.from(characteristic.lastValue);
-    await writeData(
+    return _readPostWriteLockResponse(
       deviceId,
-      payload,
+      payload: payload,
       encryptKeyOverride: encryptKeyOverride,
+      debugLabel: debugLabel,
+      timeout: timeout,
     );
-
-    var response = await _awaitLockCharacteristicValue(
-      characteristic,
-      previousValue,
-    );
-
-    if (response.isEmpty) {
-      response = await _readLockCharacteristic(characteristic);
-    }
-
-    return response;
   }
 
-  static Future<void> provisionSecretKey({
-    required String deviceId,
-    required String secretKey,
-    required String token,
+  static Future<bool> requestToUnlock(
+    String deviceId, {
+    bool forceFresh = false,
   }) async {
-    if (_isInvalidToken(token)) {
-      throw LockAuthenticationException(
-        deviceId,
-        message: 'Invalid session token for provisioning.',
-      );
+    if (!forceFresh && _deviceUnlockedThisSession[deviceId] == true) {
+      _logUnlock('Lock $deviceId already unlocked this session');
+      return true;
     }
 
-    final defaultKey = DataRequestPattern.getDefaultEncryptKey(deviceId);
-    final payloads = DataRequestPattern.getSecretKeyProvisioningPayloads(
-      secretKey,
-    );
-
-    for (final payload in [payloads.$1, payloads.$2]) {
-      final response = await _sendLockCommandAndReadResponse(
-        deviceId,
-        payload,
-        encryptKeyOverride: defaultKey,
-      );
-      if (await _isAuthFailureResponse(
-            deviceId,
-            response,
-            encryptKey: defaultKey,
-          ) ||
-          !await _isProvisionAck(
-            deviceId,
-            response,
-            encryptKey: defaultKey,
-          )) {
-        throw LockAuthenticationException(
-          deviceId,
-          message: 'Failed to provision ownership secret to the lock.',
-        );
-      }
+    if (forceFresh) {
+      _logUnlock('Sending fresh 05 01 06 unlock for $deviceId (manual unlock)');
     }
 
-    cacheDeviceEncryptKey(deviceId, secretKey);
-  }
-
-  static Future<bool> requestToUnlock(String deviceId) async {
-    await PairingService.ensurePairedForUnlock(deviceId);
-
-    final secretKey = await LockSecretStorage.getSecretKey(deviceId);
-    if (secretKey == null || secretKey.isEmpty) {
-      throw LockAuthenticationException(
-        deviceId,
-        message: 'No ownership secret found for this lock.',
-      );
-    }
-
-    cacheDeviceEncryptKey(deviceId, secretKey);
+    final encryptKey = _handshakeEncryptKey(deviceId);
+    cacheDeviceEncryptKey(deviceId, encryptKey);
 
     final token = _deviceTokens[deviceId] ??
         await BleService.getToken(deviceId, ignoreConnect: true);
@@ -1315,34 +1507,40 @@ class BleService {
       );
     }
 
-    await Future.delayed(const Duration(seconds: 1));
+    final unlockFrame = DataRequestPattern.getUnlockHex(token);
+    _logUnlock(
+      'Unlocking $deviceId — ${DataRequestPattern.describeUnlockFrame(token)}',
+    );
     final response = await _sendLockCommandAndReadResponse(
       deviceId,
-      DataRequestPattern.getUnlockHex(token),
-      encryptKeyOverride: secretKey,
+      unlockFrame,
+      encryptKeyOverride: encryptKey,
+      debugLabel: 'unlock',
     );
 
     if (await _isAuthFailureResponse(
           deviceId,
           response,
-          encryptKey: secretKey,
+          encryptKey: encryptKey,
         ) ||
         !await _isUnlockAck(
           deviceId,
           response,
-          encryptKey: secretKey,
+          encryptKey: encryptKey,
         )) {
       throw LockAuthenticationException(deviceId);
     }
 
+    _logUnlock('Unlock succeeded for $deviceId (ack frame 05 02 01 00)');
+    _deviceUnlockedThisSession[deviceId] = true;
     return true;
   }
 
   static Future<bool> connectAndUnLock(String deviceId) async {
-    final isConnected = await BleService.connect(deviceId);
-    if (!isConnected) throw Exception('Cannot connect to the Smart Lock');
+    final connected = await BleService.connect(deviceId);
+    if (!connected) return false;
 
-    return BleService.requestToUnlock(deviceId);
+    return requestToUnlock(deviceId, forceFresh: true);
   }
 
   static Future<int> _fetchBatteryLevel(String deviceId, String token) async {
