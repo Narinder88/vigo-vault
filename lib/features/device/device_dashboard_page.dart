@@ -15,6 +15,7 @@ import 'package:fitness_snack_lock/widgets/rename_lock_dialog.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:phosphoricons_flutter/phosphoricons_flutter.dart';
+import 'package:zo_animated_border/zo_animated_border.dart';
 
 class DeviceDashboardPage extends ConsumerStatefulWidget {
   const DeviceDashboardPage({super.key});
@@ -37,6 +38,7 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
   static const _disabledColor = Color(0xFF5C5D62);
 
   String? _connectingLockId;
+  String? _searchingLockId;
   bool _primaryAutoConnectStarted = false;
 
   @override
@@ -60,12 +62,19 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
     if (primaryLockId == null || !mounted) return;
 
     _primaryAutoConnectStarted = true;
+    setState(() => _searchingLockId = primaryLockId);
 
-    await LockConnectionHelper.connectPrimaryLockInBackground(
-      bleNotifier: ref.read(bleProvider.notifier),
-      locksNotifier: locksNotifier,
-      notificationManager: ref.read(notificationManagerProvider.notifier),
-    );
+    try {
+      await LockConnectionHelper.connectPrimaryLockInBackground(
+        bleNotifier: ref.read(bleProvider.notifier),
+        locksNotifier: locksNotifier,
+        notificationManager: ref.read(notificationManagerProvider.notifier),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _searchingLockId = null);
+      }
+    }
   }
 
   Future<void> _validateActiveBleSession() async {
@@ -419,6 +428,7 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
                       final lock = locks[index];
                       final isConnected = _isLockConnected(lock);
                       final bleConnectingState = ref.watch(bleProvider);
+                      final isSearching = _searchingLockId == lock.id && !isConnected;
                       final isConnecting = _connectingLockId == lock.id ||
                           (bleConnectingState.isConnecting &&
                               bleConnectingState.connectingDeviceId == lock.id);
@@ -432,6 +442,7 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
                         child: _LockCard(
                           lock: lock,
                           isConnected: isConnected,
+                          isSearching: isSearching,
                           isConnecting: isConnecting,
                           batteryLevel: telemetry.battery,
                           rssi: telemetry.rssi,
@@ -534,6 +545,7 @@ class _LockCard extends StatelessWidget {
   const _LockCard({
     required this.lock,
     required this.isConnected,
+    required this.isSearching,
     required this.isConnecting,
     required this.batteryLevel,
     required this.rssi,
@@ -543,6 +555,7 @@ class _LockCard extends StatelessWidget {
 
   final SavedLock lock;
   final bool isConnected;
+  final bool isSearching;
   final bool isConnecting;
   final int? batteryLevel;
   final int? rssi;
@@ -569,8 +582,49 @@ class _LockCard extends StatelessWidget {
 
   String get _connectionLabel {
     if (isConnecting) return 'Connecting...';
+    if (isSearching) return 'Searching...';
     if (isConnected) return 'Connected';
     return 'Tap to open';
+  }
+
+  bool get _isBusy => isConnecting || isSearching;
+
+  Widget _buildLockAvatar() {
+    const avatarRadius = 26.0;
+
+    final avatar = CircleAvatar(
+      radius: avatarRadius,
+      backgroundColor: isConnected
+          ? _accentColor.withValues(alpha: 0.18)
+          : Colors.white.withValues(alpha: 0.08),
+      child: Icon(
+        isConnected
+            ? PhosphorIconsBold.lockKey
+            : PhosphorIconsRegular.lockKey,
+        color: isConnected ? _accentColor : _subtextColor,
+        size: 26,
+      ),
+    );
+
+    if (!_isBusy) return avatar;
+
+    return ZoAnimatedGradientBorder(
+      borderRadius: avatarRadius + 2,
+      borderThickness: 2.5,
+      glowOpacity: 0.35,
+      animationDuration: const Duration(milliseconds: 1800),
+      animationCurve: Curves.linear,
+      gradientColor: [
+        _accentColor,
+        _accentColor.withValues(alpha: 0.2),
+        Colors.transparent,
+        _accentColor.withValues(alpha: 0.2),
+      ],
+      child: Padding(
+        padding: const EdgeInsets.all(3),
+        child: avatar,
+      ),
+    );
   }
 
   @override
@@ -588,25 +642,13 @@ class _LockCard extends StatelessWidget {
         borderRadius: BorderRadius.circular(innerRadius),
         clipBehavior: Clip.antiAlias,
         child: InkWell(
-          onTap: isConnecting ? null : onTap,
+          onTap: _isBusy ? null : onTap,
           borderRadius: BorderRadius.circular(innerRadius),
           child: Padding(
             padding: const EdgeInsets.all(16),
             child: Row(
             children: [
-              CircleAvatar(
-                radius: 26,
-                backgroundColor: isConnected
-                    ? _accentColor.withValues(alpha: 0.18)
-                    : Colors.white.withValues(alpha: 0.08),
-                child: Icon(
-                  isConnected
-                      ? PhosphorIconsBold.lockKey
-                      : PhosphorIconsRegular.lockKey,
-                  color: isConnected ? _accentColor : _subtextColor,
-                  size: 26,
-                ),
-              ),
+              _buildLockAvatar(),
               const SizedBox(width: 14),
               Expanded(
                 child: Column(
@@ -639,13 +681,15 @@ class _LockCard extends StatelessWidget {
                       crossAxisAlignment: WrapCrossAlignment.center,
                       children: [
                         _LockDetailChip(
-                          icon: isConnecting
+                          icon: _isBusy
                               ? PhosphorIconsRegular.circleNotch
                               : (isConnected
                                   ? PhosphorIconsRegular.bluetooth
                                   : PhosphorIconsRegular.bluetoothSlash),
                           label: _connectionLabel,
-                          color: isConnected ? _accentColor : _subtextColor,
+                          color: isConnected || _isBusy
+                              ? _accentColor
+                              : _subtextColor,
                         ),
                         if (batteryLevel != null)
                           _LockDetailChip(
