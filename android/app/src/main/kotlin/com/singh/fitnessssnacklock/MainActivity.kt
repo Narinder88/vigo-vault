@@ -31,6 +31,7 @@ class MainActivity : FlutterFragmentActivity() {
                             return@setMethodCallHandler
                         }
                         storage.pair(deviceId)
+                        WearLockDataSync.syncFromStorage(applicationContext, deviceId)
                         result.success(null)
                     }
 
@@ -65,6 +66,7 @@ class MainActivity : FlutterFragmentActivity() {
                             return@setMethodCallHandler
                         }
                         storage.saveSecretKey(deviceId, secretKey)
+                        WearLockDataSync.syncFromStorage(applicationContext, deviceId)
                         result.success(null)
                     }
 
@@ -85,6 +87,21 @@ class MainActivity : FlutterFragmentActivity() {
                             return@setMethodCallHandler
                         }
                         result.success(storage.hasSecretKey(deviceId))
+                    }
+
+                    "syncLockToWatch" -> {
+                        val deviceId = call.argument<String>("deviceId")
+                        val secretKey = call.argument<String>("secretKey")
+                        if (deviceId.isNullOrBlank()) {
+                            result.error("invalid_argument", "deviceId is required", null)
+                            return@setMethodCallHandler
+                        }
+                        WearLockDataSync.syncLockToWatch(
+                            context = applicationContext,
+                            macAddress = deviceId,
+                            secretKey = secretKey ?: storage.getSecretKey(deviceId),
+                        )
+                        result.success(null)
                     }
 
                     else -> result.notImplemented()

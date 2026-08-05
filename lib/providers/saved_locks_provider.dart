@@ -1,5 +1,6 @@
 import 'package:fitness_snack_lock/models/saved_lock.dart';
 import 'package:fitness_snack_lock/services/pairing_service.dart';
+import 'package:fitness_snack_lock/services/paired_lock_storage.dart';
 import 'package:fitness_snack_lock/services/saved_lock_storage.dart';
 import 'package:flutter_riverpod/legacy.dart';
 
@@ -60,6 +61,11 @@ class SavedLocksNotifier extends StateNotifier<SavedLocksState> {
       primaryLockId: primaryLockId,
       isLoading: false,
     );
+
+    final watchLockId = primaryLockId ?? activeLockId;
+    if (watchLockId != null) {
+      await PairedLockStorage.syncLockToWatch(watchLockId);
+    }
   }
 
   String? _resolvePrimaryLockId(
@@ -306,6 +312,9 @@ class SavedLocksNotifier extends StateNotifier<SavedLocksState> {
       primaryLockId: state.primaryLockId,
       isLoading: state.isLoading,
     );
+    if (lockId != null) {
+      await PairedLockStorage.syncLockToWatch(lockId);
+    }
   }
 
   String? get activeLockId => state.activeLockId;

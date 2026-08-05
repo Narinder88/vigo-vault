@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Vigo Vault</string>
+    <string name="unlock">Unlock</string>
+    <string name="unlocking">Unlocking…</string>
+    <string name="unlock_failed">Unlock failed</string>
+    <string name="unlock_success">Unlocked</string>
+    <string name="no_lock_configured">Pair lock on phone</string>
+    <string name="bluetooth_permission_required">Bluetooth permission required</string>
+</resources>

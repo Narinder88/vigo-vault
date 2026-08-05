@@ -98,6 +98,20 @@ class PairedLockStorage {
     await _saveFallbackIds(ids);
   }
 
+  /// Pushes the lock MAC and secret key to the paired Wear OS app.
+  static Future<void> syncLockToWatch(String deviceId) async {
+    if (deviceId.isEmpty || !_useNativeSecureStorage) return;
+
+    try {
+      await _channel.invokeMethod<void>(
+        'syncLockToWatch',
+        {'deviceId': deviceId},
+      );
+    } on PlatformException {
+      // Watch may be disconnected or unavailable.
+    }
+  }
+
   static bool get _useNativeSecureStorage =>
       !kIsWeb && (Platform.isAndroid || Platform.isIOS);
 
