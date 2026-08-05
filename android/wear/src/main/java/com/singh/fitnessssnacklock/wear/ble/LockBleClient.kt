@@ -12,10 +12,10 @@ import android.content.Context
 import android.os.Build
 import android.util.Log
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeout
 import java.util.UUID
-import java.util.concurrent.ConcurrentHashMap
 
 class LockBleClient(
     private val context: Context,
@@ -40,29 +40,39 @@ class LockBleClient(
         val normalizedMac = normalizeMacAddress(macAddress)
         val encryptKey = secretKey.ifBlank { LockProtocol.DEFAULT_ENCRYPT_KEY }.lowercase()
         val session = GattSession(context)
+        var notifyCharacteristic: BluetoothGattCharacteristic? = null
 
         return try {
+            Log.d(TAG, "Connecting to lock $normalizedMac")
             val device = adapter.getRemoteDevice(normalizedMac)
             session.connect(device)
 
             val services = session.discoverServices()
             val writeCharacteristic = findWriteCharacteristic(services)
                 ?: return UnlockResult.Failure("Lock write characteristic not found")
-            val notifyCharacteristic = findNotifyCharacteristic(services)
+            notifyCharacteristic = findNotifyCharacteristic(services)
                 ?: return UnlockResult.Failure("Lock notify characteristic not found")
 
             session.enableNotifications(notifyCharacteristic)
-            delay(150)
+            session.flushNotifyBuffer(notifyCharacteristic)
+            delay(200)
 
-            val token = performHandshake(session, writeCharacteristic, notifyCharacteristic, encryptKey)
-                ?: return UnlockResult.Failure("Handshake failed")
+            val token = performHandshake(
+                session,
+                writeCharacteristic,
+                notifyCharacteristic,
+                encryptKey,
+            ) ?: return UnlockResult.Failure(HANDSHAKE_FAILED_MESSAGE)
 
             writeUnlock(session, writeCharacteristic, notifyCharacteristic, token, encryptKey)
+        } catch (error: TimeoutCancellationException) {
+            Log.e(TAG, "Unlock timed out", error)
+            UnlockResult.Failure(CONNECT_TIMEOUT_MESSAGE)
         } catch (error: Exception) {
             Log.e(TAG, "Unlock failed", error)
             UnlockResult.Failure(error.message ?: "Unlock failed")
         } finally {
-            session.close()
+            session.releaseGatt(notifyCharacteristic)
         }
     }
 
@@ -75,7 +85,9 @@ class LockBleClient(
     ): String? {
         repeat(MAX_HANDSHAKE_ATTEMPTS) { attempt ->
             if (attempt > 0) {
-                delay(300)
+                delay(400)
+                session.flushNotifyBuffer(notifyCharacteristic)
+                delay(200)
             }
 
             val response = session.writeEncryptedAndAwaitNotify(
@@ -90,6 +102,7 @@ class LockBleClient(
                 Log.d(TAG, "Handshake token=$token")
                 return token
             }
+            Log.w(TAG, "Handshake attempt ${attempt + 1}: notify received but token parse failed")
         }
         return null
     }
@@ -171,8 +184,13 @@ class LockBleClient(
         private val callback = object : BluetoothGattCallback() {
             override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
                 if (newState == BluetoothProfile.STATE_CONNECTED) {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                        gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
+                    }
                     connectedDeferred?.complete(Unit)
-                } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                } else if (newState == BluetoothProfile.STATE_DISCONNECTED &&
+                    connectedDeferred?.isCompleted == false
+                ) {
                     connectedDeferred?.completeExceptionally(
                         IllegalStateException("Disconnected (status=$status)"),
                     )
@@ -196,25 +214,28 @@ class LockBleClient(
             ) {
                 if (status == BluetoothGatt.GATT_SUCCESS) {
                     descriptorDeferred?.complete(Unit)
-                } else {
+                } else if (descriptorDeferred?.isCompleted == false) {
                     descriptorDeferred?.completeExceptionally(
                         IllegalStateException("Descriptor write failed (status=$status)"),
                     )
                 }
             }
 
+            @Deprecated("Deprecated in API 33")
             override fun onCharacteristicChanged(
                 gatt: BluetoothGatt,
                 characteristic: BluetoothGattCharacteristic,
             ) {
-                if (characteristic.uuid == notifyCharacteristicId &&
-                    notifyDeferred?.isCompleted == false
-                ) {
-                    val value = characteristic.value ?: byteArrayOf()
-                    if (value.isNotEmpty()) {
-                        notifyDeferred?.complete(value)
-                    }
-                }
+                @Suppress("DEPRECATION")
+                handleNotify(characteristic, characteristic.value ?: byteArrayOf())
+            }
+
+            override fun onCharacteristicChanged(
+                gatt: BluetoothGatt,
+                characteristic: BluetoothGattCharacteristic,
+                value: ByteArray,
+            ) {
+                handleNotify(characteristic, value)
             }
 
             override fun onCharacteristicWrite(
@@ -228,6 +249,19 @@ class LockBleClient(
                     writeDeferred?.completeExceptionally(
                         IllegalStateException("Characteristic write failed (status=$status)"),
                     )
+                }
+            }
+
+            private fun handleNotify(
+                characteristic: BluetoothGattCharacteristic,
+                value: ByteArray,
+            ) {
+                if (characteristic.uuid == notifyCharacteristicId &&
+                    notifyDeferred?.isCompleted == false &&
+                    value.isNotEmpty()
+                ) {
+                    Log.d(TAG, "Notify ${value.size}b from ${characteristic.uuid}")
+                    notifyDeferred?.complete(value)
                 }
             }
         }
@@ -270,13 +304,48 @@ class LockBleClient(
                 ?: throw IllegalStateException("CCCD descriptor missing")
 
             descriptorDeferred = CompletableDeferred()
-            descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-            if (!activeGatt.writeDescriptor(descriptor)) {
-                throw IllegalStateException("writeDescriptor returned false")
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                activeGatt.writeDescriptor(
+                    descriptor,
+                    BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE,
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                @Suppress("DEPRECATION")
+                activeGatt.writeDescriptor(descriptor)
             }
 
             withTimeout(HANDSHAKE_TIMEOUT_MS) {
                 descriptorDeferred?.await()
+            }
+        }
+
+        @SuppressLint("MissingPermission")
+        suspend fun flushNotifyBuffer(notifyCharacteristic: BluetoothGattCharacteristic) {
+            val activeGatt = gatt ?: return
+            try {
+                activeGatt.setCharacteristicNotification(notifyCharacteristic, false)
+                delay(150)
+                activeGatt.setCharacteristicNotification(notifyCharacteristic, true)
+                val descriptor = notifyCharacteristic.getDescriptor(CCCD_UUID) ?: return
+                descriptorDeferred = CompletableDeferred()
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    activeGatt.writeDescriptor(
+                        descriptor,
+                        BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE,
+                    )
+                } else {
+                    @Suppress("DEPRECATION")
+                    descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                    @Suppress("DEPRECATION")
+                    activeGatt.writeDescriptor(descriptor)
+                }
+                withTimeout(HANDSHAKE_TIMEOUT_MS) {
+                    descriptorDeferred?.await()
+                }
+            } catch (error: Exception) {
+                Log.w(TAG, "Notify flush warning: ${error.message}")
             }
         }
 
@@ -297,9 +366,17 @@ class LockBleClient(
             writeDeferred = CompletableDeferred()
 
             writeCharacteristic.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
-            writeCharacteristic.value = encrypted
-            if (!activeGatt.writeCharacteristic(writeCharacteristic)) {
-                throw IllegalStateException("writeCharacteristic returned false")
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                activeGatt.writeCharacteristic(
+                    writeCharacteristic,
+                    encrypted,
+                    writeCharacteristic.writeType,
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                writeCharacteristic.value = encrypted
+                @Suppress("DEPRECATION")
+                activeGatt.writeCharacteristic(writeCharacteristic)
             }
 
             withTimeout(HANDSHAKE_TIMEOUT_MS) {
@@ -310,22 +387,50 @@ class LockBleClient(
                 withTimeout(timeoutMs) {
                     notifyDeferred?.await()
                 }
-            } catch (_: Exception) {
+            } catch (_: TimeoutCancellationException) {
+                Log.w(TAG, "Timed out waiting for notify after write")
                 null
             }
         }
 
         @SuppressLint("MissingPermission")
-        fun close() {
+        fun releaseGatt(notifyCharacteristic: BluetoothGattCharacteristic?) {
             val activeGatt = gatt ?: return
+
+            notifyCharacteristic?.let { characteristic ->
+                try {
+                    activeGatt.setCharacteristicNotification(characteristic, false)
+                    val descriptor = characteristic.getDescriptor(CCCD_UUID) ?: return@let
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        activeGatt.writeDescriptor(
+                            descriptor,
+                            BluetoothGattDescriptor.DISABLE_NOTIFICATION_VALUE,
+                        )
+                    } else {
+                        @Suppress("DEPRECATION")
+                        descriptor.value = BluetoothGattDescriptor.DISABLE_NOTIFICATION_VALUE
+                        @Suppress("DEPRECATION")
+                        activeGatt.writeDescriptor(descriptor)
+                    }
+                } catch (error: Exception) {
+                    Log.w(TAG, "Failed to disable notifications before GATT teardown", error)
+                }
+            }
+
             try {
                 activeGatt.disconnect()
-            } catch (_: Exception) {
+                Log.d(TAG, "GATT disconnected")
+            } catch (error: Exception) {
+                Log.w(TAG, "GATT disconnect failed", error)
             }
+
             try {
                 activeGatt.close()
-            } catch (_: Exception) {
+                Log.d(TAG, "GATT closed")
+            } catch (error: Exception) {
+                Log.w(TAG, "GATT close failed", error)
             }
+
             gatt = null
         }
     }
@@ -333,10 +438,14 @@ class LockBleClient(
     companion object {
         private const val TAG = "WearLockBle"
         private val CCCD_UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
-        private const val CONNECT_TIMEOUT_MS = 10_000L
-        private const val SERVICE_DISCOVERY_TIMEOUT_MS = 8_000L
-        private const val HANDSHAKE_TIMEOUT_MS = 3_000L
-        private const val UNLOCK_NOTIFY_TIMEOUT_MS = 2_000L
+        private const val CONNECT_TIMEOUT_MS = 15_000L
+        private const val SERVICE_DISCOVERY_TIMEOUT_MS = 10_000L
+        private const val HANDSHAKE_TIMEOUT_MS = 5_000L
+        private const val UNLOCK_NOTIFY_TIMEOUT_MS = 3_000L
         private const val MAX_HANDSHAKE_ATTEMPTS = 3
+        private const val CONNECT_TIMEOUT_MESSAGE =
+            "Could not reach lock. Move closer and close Vigo Vault on your phone."
+        private const val HANDSHAKE_FAILED_MESSAGE =
+            "Handshake failed. Try again near the lock."
     }
 }

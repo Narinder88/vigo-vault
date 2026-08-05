@@ -7,6 +7,11 @@ import io.flutter.plugin.common.MethodChannel
 class MainActivity : FlutterFragmentActivity() {
     private val channelName = "com.singh.fitnessssnacklock/paired_locks"
 
+    override fun onResume() {
+        super.onResume()
+        WearLockDataSync.syncFirstPairedLock(applicationContext)
+    }
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
 

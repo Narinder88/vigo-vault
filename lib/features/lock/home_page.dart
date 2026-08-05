@@ -68,32 +68,6 @@ class _HomePageState extends ConsumerState<HomePage>
     _pulseAnimation = Tween<double>(begin: 1.0, end: 1.1).animate(
       CurvedAnimation(parent: _pulseController, curve: Curves.easeInOut),
     );
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      unawaited(_syncDetailViewSession());
-    });
-  }
-
-  /// Keeps the detail screen on the connected UI when BLE is already linked.
-  Future<void> _syncDetailViewSession() async {
-    final lockId = widget.lockDeviceId;
-    if (lockId == null || !mounted) return;
-
-    final currentDeviceId = ref.read(bleProvider).device?.remoteId.str;
-    if (currentDeviceId == lockId) return;
-
-    if (!LockConnectionHelper.isPreConnected(lockId)) return;
-    if (!LockConnectionHelper.isValidToken(BleService.tokenForDevice(lockId))) {
-      return;
-    }
-
-    await LockConnectionHelper.connectAndRestoreSession(
-      deviceId: lockId,
-      bleNotifier: ref.read(bleProvider.notifier),
-      locksNotifier: ref.read(savedLocksProvider.notifier),
-      notificationManager: ref.read(notificationManagerProvider.notifier),
-      switchConnection: false,
-      background: true,
-    );
   }
 
   String? _resolvedLockId(BluetoothDevice? device) {
@@ -227,27 +201,14 @@ class _HomePageState extends ConsumerState<HomePage>
     _spinController.reset();
   }
 
-  Future<void> _handleLockTap(
-    String deviceId, {
-    bool preferExistingConnection = false,
-    bool forceFreshUnlock = true,
-  }) async {
+  Future<void> _handleLockTap(String deviceId) async {
     if (_isUnlocking) return;
 
     setState(() => _isUnlocking = true);
     _startUnlockAnimation();
 
     try {
-      final bool isUnlocked;
-      if (preferExistingConnection &&
-          LockConnectionHelper.isPreConnected(deviceId)) {
-        isUnlocked = await LockConnectionHelper.unlockPreConnectedLock(
-          deviceId,
-          forceFresh: forceFreshUnlock,
-        );
-      } else {
-        isUnlocked = await BleService.connectAndUnLock(deviceId);
-      }
+      final isUnlocked = await BleService.connectAndUnLock(deviceId);
 
       if (!mounted) return;
 

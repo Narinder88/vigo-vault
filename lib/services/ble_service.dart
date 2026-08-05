@@ -390,6 +390,34 @@ class BleService {
     await disconnectDevice(activeId);
   }
 
+  /// Tears down the GATT link after a short-lived connect/unlock operation.
+  static Future<void> releaseOnDemandConnection(String deviceId) {
+    return runExclusive(() => _releaseOnDemandConnectionInternal(deviceId));
+  }
+
+  static Future<void> _releaseOnDemandConnectionInternal(String deviceId) async {
+    _logUnlock('Releasing on-demand GATT connection for $deviceId');
+    _resetHandshakeState(deviceId);
+    if (_activeDeviceId == deviceId) {
+      _activeDeviceId = null;
+    }
+    await _forceReleaseDevice(deviceId);
+  }
+
+  /// Disconnects every active lock when the app backgrounds or resets BLE state.
+  static Future<void> releaseAllActiveConnections({
+    Iterable<String> knownDeviceIds = const [],
+  }) {
+    return runExclusive(() async {
+      _activeDeviceId = null;
+      await _disconnectAllLocksBeforeConnect(
+        '',
+        knownDeviceIds: knownDeviceIds,
+      );
+      await _waitForGattSettle();
+    });
+  }
+
   static Future<bool> switchConnection(
     String deviceId, {
     Iterable<String> knownDeviceIds = const [],
@@ -1484,12 +1512,27 @@ class BleService {
   static Future<bool> requestToUnlock(
     String deviceId, {
     bool forceFresh = false,
-  }) async {
-    if (!forceFresh && _deviceUnlockedThisSession[deviceId] == true) {
-      _logUnlock('Lock $deviceId already unlocked this session');
-      return true;
-    }
+  }) {
+    return runExclusive(() async {
+      try {
+        if (!forceFresh && _deviceUnlockedThisSession[deviceId] == true) {
+          _logUnlock('Lock $deviceId already unlocked this session');
+          return true;
+        }
 
+        return await _requestToUnlockCore(deviceId, forceFresh: forceFresh);
+      } on LockAuthenticationException {
+        rethrow;
+      } finally {
+        await _releaseOnDemandConnectionInternal(deviceId);
+      }
+    });
+  }
+
+  static Future<bool> _requestToUnlockCore(
+    String deviceId, {
+    bool forceFresh = false,
+  }) async {
     if (forceFresh) {
       _logUnlock('Sending fresh 05 01 06 unlock for $deviceId (manual unlock)');
     }
@@ -1536,11 +1579,19 @@ class BleService {
     return true;
   }
 
-  static Future<bool> connectAndUnLock(String deviceId) async {
-    final connected = await BleService.connect(deviceId);
-    if (!connected) return false;
+  static Future<bool> connectAndUnLock(String deviceId) {
+    return runExclusive(() async {
+      try {
+        final connected = await _connectImpl(deviceId);
+        if (!connected) return false;
 
-    return requestToUnlock(deviceId, forceFresh: true);
+        return await _requestToUnlockCore(deviceId, forceFresh: true);
+      } on LockAuthenticationException {
+        rethrow;
+      } finally {
+        await _releaseOnDemandConnectionInternal(deviceId);
+      }
+    });
   }
 
   static Future<int> _fetchBatteryLevel(String deviceId, String token) async {
@@ -1583,10 +1634,12 @@ class BleService {
     bool ignoreConnect = false,
     String? token,
   }) async {
+    var connectedHere = false;
+
     try {
       if (!ignoreConnect) {
-        final isConnected = await BleService.connect(deviceId);
-        if (!isConnected) {
+        connectedHere = await BleService.connect(deviceId);
+        if (!connectedHere) {
           print('DEBUG: getBatteryLevel failed/timed out');
           return -1;
         }
@@ -1613,6 +1666,10 @@ class BleService {
     } catch (_) {
       print('DEBUG: getBatteryLevel failed/timed out');
       return -1;
+    } finally {
+      if (connectedHere) {
+        await _releaseOnDemandConnectionInternal(deviceId);
+      }
     }
   }
 }

@@ -50,6 +50,15 @@ object WearLockDataSync {
             secretKey = secretKey,
         )
     }
+
+    fun syncFirstPairedLock(context: Context) {
+        val storage = PairedLockSecureStorage(context.applicationContext)
+        val deviceId = storage.getPairedIds().firstOrNull() ?: run {
+            Log.d(TAG, "No paired locks to sync to watch")
+            return
+        }
+        syncFromStorage(context, deviceId)
+    }
 }
 
 object LockProtocolDefaults {

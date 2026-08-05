@@ -4,8 +4,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 import androidx.wear.compose.material.MaterialTheme
 
-private val PrimaryGreen = Color(0xFF2E7D32)
-private val SurfaceDark = Color(0xFF121212)
+private val PrimaryGreen = Color(0xFF00E676)
+private val SurfaceDark = Color(0xFF000000)
 
 @Composable
 fun WearLockTheme(content: @Composable () -> Unit) {

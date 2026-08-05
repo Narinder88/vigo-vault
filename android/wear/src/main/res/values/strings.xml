@@ -6,5 +6,9 @@
     <string name="unlock_failed">Unlock failed</string>
     <string name="unlock_success">Unlocked</string>
     <string name="no_lock_configured">Pair lock on phone</string>
+    <string name="refresh">Refresh</string>
+    <string name="syncing">Syncing…</string>
     <string name="bluetooth_permission_required">Bluetooth permission required</string>
+    <string name="unlock_connect_timeout">Could not reach lock. Move closer and close Vigo Vault on your phone.</string>
+    <string name="unlock_handshake_failed">Handshake failed. Try again near the lock.</string>
 </resources>

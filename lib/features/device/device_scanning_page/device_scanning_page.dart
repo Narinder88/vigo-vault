@@ -287,6 +287,8 @@ class _DeviceScanningPageState extends ConsumerState<DeviceScanningPage> {
         sheetContext: sheetContext,
         message: 'Something went wrong while connecting. Please try again.',
       );
+    } finally {
+      await BleService.releaseOnDemandConnection(scanResult.device.remoteId.str);
     }
   }
 
