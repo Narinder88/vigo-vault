@@ -63,6 +63,8 @@ class LockConnectionHelper {
       bleNotifier.beginConnecting(deviceId);
     }
 
+    var sessionEstablished = false;
+
     try {
       if (!switchConnection && !await BleService.verifyConnection(deviceId)) {
         await BleService.prepareFreshConnection(deviceId);
@@ -77,7 +79,6 @@ class LockConnectionHelper {
             )
           : await BleService.connect(deviceId);
       if (!connected) {
-        await BleService.resetDeviceConnection(deviceId);
         if (!background) {
           bleNotifier.markConnectFailed();
         }
@@ -86,13 +87,13 @@ class LockConnectionHelper {
 
       final token = BleService.tokenForDevice(deviceId);
       if (!isValidToken(token)) {
-        await BleService.resetDeviceConnection(deviceId);
         if (!background) {
           bleNotifier.markConnectFailed();
         }
         return false;
       }
 
+      sessionEstablished = true;
       final device = BluetoothDevice.fromId(deviceId);
       final readings = await readBatteryAndRssi(
         device: device,
@@ -115,93 +116,48 @@ class LockConnectionHelper {
         await SavedLockStorage.setActiveLockId(deviceId);
       }
 
-      bleNotifier.setConnected(
-        device: device,
-        token: token,
-        batteryLevel: readings.batteryLevel,
-        rssi: readings.rssi,
-        customDeviceName: displayName,
-        requiresClaiming: BleService.requiresClaiming(deviceId),
-      );
-
       if (readings.batteryLevel != null && notificationManager != null) {
         await notificationManager.createReachBatteryNotification(
           readings.batteryLevel!,
         );
       }
 
-      BleConnectionMonitor.startMonitoring(
-        deviceId: deviceId,
-        bleNotifier: bleNotifier,
-        locksNotifier: locksNotifier,
-      );
-
       return true;
     } catch (_) {
-      await BleService.resetDeviceConnection(deviceId);
       if (!background) {
         bleNotifier.markConnectFailed();
       }
       return false;
     } finally {
-      if (!background && bleNotifier.value.isConnecting) {
-        bleNotifier.endConnecting();
+      if (sessionEstablished || BleService.isDeviceConnected(deviceId)) {
+        await BleService.releaseOnDemandConnection(deviceId);
+      }
+      BleConnectionMonitor.stopMonitoring();
+      if (!background) {
+        bleNotifier.clearSession();
+        if (bleNotifier.value.isConnecting) {
+          bleNotifier.endConnecting();
+        }
       }
     }
   }
 
-  /// Background connect for the designated primary lock only.
+  /// On-demand mode: the phone no longer keeps a background GATT session open.
   static Future<bool> connectPrimaryLockInBackground({
     required BleProvider bleNotifier,
     required SavedLocksNotifier locksNotifier,
     NotificationManagerProvider? notificationManager,
   }) async {
-    final primaryLockId = locksNotifier.resolvedPrimaryLockId;
-    if (primaryLockId == null || primaryLockId.isEmpty) {
-      return false;
-    }
-
-    if (isPreConnected(primaryLockId)) {
-      BleConnectionMonitor.startMonitoring(
-        deviceId: primaryLockId,
-        bleNotifier: bleNotifier,
-        locksNotifier: locksNotifier,
-      );
-      return true;
-    }
-
-    try {
-      await FlutterBluePlus.adapterState
-          .where((state) => state == BluetoothAdapterState.on)
-          .first
-          .timeout(const Duration(seconds: 8));
-    } catch (_) {
-      return false;
-    }
-
-    return connectAndRestoreSession(
-      deviceId: primaryLockId,
-      bleNotifier: bleNotifier,
-      locksNotifier: locksNotifier,
-      notificationManager: notificationManager,
-      switchConnection: true,
-      background: true,
-    );
+    BleConnectionMonitor.stopMonitoring();
+    return false;
   }
 
   static Future<bool> unlockPreConnectedLock(
     String deviceId, {
     bool forceFresh = false,
   }) async {
-    if (!isPreConnected(deviceId)) {
-      return false;
-    }
-
     try {
-      return await BleService.requestToUnlock(
-        deviceId,
-        forceFresh: forceFresh,
-      );
+      return await BleService.connectAndUnLock(deviceId);
     } on PairingRequiredException {
       return false;
     } on LockAuthenticationException {

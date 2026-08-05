@@ -9,7 +9,7 @@ android {
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.singh.fitnessssnacklock.wear"
+        applicationId = "com.singh.fitnessssnacklock"
         minSdk = 30
         targetSdk = 36
         versionCode = 1

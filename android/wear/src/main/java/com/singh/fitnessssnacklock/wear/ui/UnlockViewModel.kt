@@ -46,8 +46,12 @@ class UnlockViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun refreshConfig() {
+        if (_uiState.value.isRefreshing) return
+
         viewModelScope.launch {
+            _uiState.update { it.copy(isRefreshing = true) }
             configSync.refreshFromDataLayer()
+            _uiState.update { it.copy(isRefreshing = false) }
         }
     }
 
@@ -118,16 +122,22 @@ class UnlockViewModel(application: Application) : AndroidViewModel(application) 
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
             return true
         }
-        return ContextCompat.checkSelfPermission(
+        val connectGranted = ContextCompat.checkSelfPermission(
             getApplication(),
             android.Manifest.permission.BLUETOOTH_CONNECT,
         ) == PackageManager.PERMISSION_GRANTED
+        val scanGranted = ContextCompat.checkSelfPermission(
+            getApplication(),
+            android.Manifest.permission.BLUETOOTH_SCAN,
+        ) == PackageManager.PERMISSION_GRANTED
+        return connectGranted && scanGranted
     }
 }
 
 data class UnlockUiState(
     val lockConfig: LockConfig? = null,
     val isUnlocking: Boolean = false,
+    val isRefreshing: Boolean = false,
     val statusMessage: UnlockStatus = UnlockStatus.NoLockConfigured,
 )
 

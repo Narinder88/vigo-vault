@@ -1,3 +1,9 @@
+import 'dart:async';
+
+import 'package:fitness_snack_lock/providers/ble_provider.dart';
+import 'package:fitness_snack_lock/providers/saved_locks_provider.dart';
+import 'package:fitness_snack_lock/services/ble_connection_monitor.dart';
+import 'package:fitness_snack_lock/services/ble_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_easyloading/flutter_easyloading.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -7,7 +13,6 @@ import 'constants/app_branding.dart';
 import 'constants/colors.dart';
 import 'features/device/device_dashboard_page.dart';
 import 'features/onboarding/splash_screen.dart';
-import 'providers/saved_locks_provider.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -20,11 +25,50 @@ void main() async {
   );
 }
 
-class RootApp extends ConsumerWidget {
+class RootApp extends ConsumerStatefulWidget {
   const RootApp({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<RootApp> createState() => _RootAppState();
+}
+
+class _RootAppState extends ConsumerState<RootApp> with WidgetsBindingObserver {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached ||
+        state == AppLifecycleState.hidden) {
+      unawaited(_releaseBleOnBackground());
+    }
+  }
+
+  Future<void> _releaseBleOnBackground() async {
+    final locks = ref.read(savedLocksProvider).locks;
+    final deviceIds = locks.map((lock) => lock.id);
+
+    await BleService.releaseAllActiveConnections(
+      knownDeviceIds: deviceIds,
+    );
+    ref.read(bleProvider.notifier).clearSession();
+    BleConnectionMonitor.stopMonitoring();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    ref.watch(savedLocksProvider);
+
     return MaterialApp(
       title: kAppDisplayName,
       debugShowCheckedModeBanner: false,
@@ -48,7 +92,6 @@ class LockHomePage extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    ref.watch(savedLocksProvider);
     return const DeviceDashboardPage();
   }
 }
