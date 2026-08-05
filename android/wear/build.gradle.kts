@@ -21,7 +21,7 @@ android {
         applicationId = "com.singh.fitnessssnacklock"
         minSdk = 30
         targetSdk = 36
-        versionCode = 195
+        versionCode = 196
         versionName = "1.0.1"
     }
 
