@@ -69,6 +69,27 @@ class _HomePageState extends ConsumerState<HomePage>
     _pulseAnimation = Tween<double>(begin: 1.0, end: 1.1).animate(
       CurvedAnimation(parent: _pulseController, curve: Curves.easeInOut),
     );
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(_ensureLockSessionReady());
+    });
+  }
+
+  Future<void> _ensureLockSessionReady() async {
+    final lockId = widget.lockDeviceId;
+    if (lockId == null || lockId.isEmpty || !mounted) return;
+    if (BleService.isDeviceConnected(lockId)) return;
+
+    await LockConnectionHelper.connectAndRestoreSession(
+      deviceId: lockId,
+      bleNotifier: ref.read(bleProvider.notifier),
+      locksNotifier: ref.read(savedLocksProvider.notifier),
+      notificationManager: ref.read(notificationManagerProvider.notifier),
+      background: true,
+    );
+  }
+
+  String _unlockTargetId(BluetoothDevice device) {
+    return widget.lockDeviceId ?? device.remoteId.str;
   }
 
   String? _resolvedLockId(BluetoothDevice? device) {
@@ -202,14 +223,17 @@ class _HomePageState extends ConsumerState<HomePage>
     _spinController.reset();
   }
 
-  Future<void> _handleLockTap(String deviceId) async {
+  Future<void> _handleLockTap(BluetoothDevice device) async {
     if (_isUnlocking) return;
+
+    final lockId = _unlockTargetId(device);
+    if (lockId.isEmpty) return;
 
     setState(() => _isUnlocking = true);
     _startUnlockAnimation();
 
     try {
-      final isUnlocked = await BleService.connectAndUnLock(deviceId);
+      final isUnlocked = await LockConnectionHelper.triggerUnlock(lockId);
 
       if (!mounted) return;
 
@@ -449,7 +473,7 @@ class _HomePageState extends ConsumerState<HomePage>
                           isUnlocking: _isUnlocking,
                           pulseAnimation: _pulseAnimation,
                           spinController: _spinController,
-                          onTap: () => _handleLockTap(device.remoteId.str),
+                          onTap: () => _handleLockTap(device),
                         ),
                       ],
                     ),

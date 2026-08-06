@@ -148,9 +148,6 @@ class LockConnectionHelper {
       }
       return false;
     } finally {
-      if (sessionEstablished || BleService.isDeviceConnected(deviceId)) {
-        await BleService.releaseOnDemandConnection(deviceId);
-      }
       BleConnectionMonitor.stopMonitoring();
       if (!background) {
         if (!sessionEstablished) {
@@ -161,6 +158,11 @@ class LockConnectionHelper {
         }
       }
     }
+  }
+
+  /// Same unlock path used by the phone UI and Apple Watch MethodChannel bridge.
+  static Future<bool> triggerUnlock(String deviceId) {
+    return BleService.unlockLock(deviceId);
   }
 
   /// On-demand mode: the phone no longer keeps a background GATT session open.
@@ -178,7 +180,7 @@ class LockConnectionHelper {
     bool forceFresh = false,
   }) async {
     try {
-      return await BleService.connectAndUnLock(deviceId);
+      return await triggerUnlock(deviceId);
     } on PairingRequiredException {
       return false;
     } on LockAuthenticationException {

@@ -1613,17 +1613,18 @@ class BleService {
     await _iosBleSettle('post-handshake before 05 01 06 unlock');
   }
 
-  /// Uses an live GATT link when the lock is already connected (Watch-style fast path).
+  /// Uses a live GATT link when the lock is already connected (Watch-style fast path).
   static Future<String?> _tryUnlockOnExistingConnection(String deviceId) async {
-    final device = BluetoothDevice.fromId(deviceId);
-    if (!device.isConnected) {
-      return null;
+    if (isDeviceConnected(deviceId)) {
+      _activeDeviceId = deviceId;
+      _logUnlock(
+        'Reusing authenticated GATT session for unlock ($deviceId)',
+      );
+      return _deviceTokens[deviceId];
     }
 
-    try {
-      await device.discoverServices().timeout(const Duration(seconds: 2));
-    } catch (_) {
-      _logUnlock('Existing GATT link stale for $deviceId — will reconnect');
+    final device = BluetoothDevice.fromId(deviceId);
+    if (!device.isConnected) {
       return null;
     }
 
@@ -1639,6 +1640,13 @@ class BleService {
     _logUnlock(
       'Existing GATT connection for $deviceId — running 06 01 handshake only',
     );
+    try {
+      await device.discoverServices().timeout(const Duration(seconds: 2));
+    } catch (_) {
+      _logUnlock('Existing GATT link stale for $deviceId — will reconnect');
+      return null;
+    }
+
     final token = await _performSessionHandshake(deviceId);
     if (token == null) return null;
 
@@ -1649,6 +1657,14 @@ class BleService {
 
   /// Strict on-demand session: credentials → disconnect → connect → 06 01 AES handshake.
   static Future<String> _prepareOnDemandUnlockSession(String deviceId) async {
+    if (isDeviceConnected(deviceId)) {
+      _activeDeviceId = deviceId;
+      _logUnlock(
+        'Skipping reconnect — authenticated session already active for $deviceId',
+      );
+      return _deviceTokens[deviceId]!;
+    }
+
     _deviceUnlockedThisSession.remove(deviceId);
     _resetHandshakeState(deviceId);
 
@@ -1816,16 +1832,23 @@ class BleService {
     return true;
   }
 
-  static Future<bool> connectAndUnLock(String deviceId) {
+  /// Single unlock entry point used by the phone UI and Apple Watch bridge.
+  static Future<bool> unlockLock(String deviceId) {
     return runExclusive(() async {
       try {
         await _loadCredentialsForUnlock(deviceId);
 
-        final existingToken = await _tryUnlockOnExistingConnection(deviceId);
+        final usedExistingSession =
+            await _tryUnlockOnExistingConnection(deviceId);
         final String sessionToken;
+        final bool usedFastPath = usedExistingSession != null &&
+            _isValidToken(usedExistingSession);
 
-        if (existingToken != null && _isValidToken(existingToken)) {
-          sessionToken = existingToken;
+        if (usedFastPath) {
+          sessionToken = usedExistingSession;
+          _logUnlock(
+            'Fast-path unlock on live GATT session for $deviceId (Watch-equivalent path)',
+          );
         } else {
           sessionToken = await _prepareOnDemandUnlockSession(deviceId);
           await _postHandshakeSettleDelay();
@@ -1833,7 +1856,7 @@ class BleService {
 
         return await _requestToUnlockCore(
           deviceId,
-          forceFresh: true,
+          forceFresh: !usedFastPath,
           sessionToken: sessionToken,
           responseTimeout: _unlockWriteTimeout,
         );
@@ -1858,6 +1881,9 @@ class BleService {
       }
     });
   }
+
+  /// @deprecated Use [unlockLock]. Kept for call-site compatibility.
+  static Future<bool> connectAndUnLock(String deviceId) => unlockLock(deviceId);
 
   static Future<int> _fetchBatteryLevel(String deviceId, String token) async {
     final device = BluetoothDevice.fromId(deviceId);
