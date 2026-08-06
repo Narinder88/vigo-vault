@@ -128,9 +128,6 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
         locksNotifier: ref.read(savedLocksProvider.notifier),
         notificationManager: ref.read(notificationManagerProvider.notifier),
         background: true,
-      ).timeout(
-        const Duration(seconds: 5),
-        onTimeout: () => false,
       );
       if (connected && mounted) {
         _resetBusyConnectionState();
@@ -159,12 +156,8 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
   }
 
   bool _isLockConnected(SavedLock lock, BleData bleState) {
-    if (BleService.isDeviceConnected(lock.id)) return true;
-    if (_hasBleSession(lock, bleState) &&
-        BluetoothDevice.fromId(lock.id).isConnected) {
-      return true;
-    }
-    return false;
+    if (_hasBleSession(lock, bleState)) return true;
+    return BleService.isDeviceConnected(lock.id);
   }
 
   String _bleStateSummary(BleData bleState, String lockId) {
@@ -268,6 +261,19 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
     );
 
     try {
+      if (LockConnectionHelper.hasPendingConnect(lock.id) ||
+          (bleState.isConnecting && bleState.connectingDeviceId == lock.id)) {
+        BleDebugLog.tap('Awaiting in-flight connect for ${lock.id}');
+        await LockConnectionHelper.awaitPendingConnect(lock.id);
+        if (!mounted) return;
+        final afterPending = ref.read(bleProvider);
+        if (_isLockConnected(lock, afterPending)) {
+          BleDebugLog.tap('In-flight connect succeeded — opening lock screen');
+          await _navigateToLockScreen(lock);
+          return;
+        }
+      }
+
       if (_isLockConnected(lock, bleState)) {
         BleDebugLog.tap('Already connected — opening lock screen');
         await _navigateToLockScreen(lock);
@@ -280,7 +286,9 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
         ref.read(bleProvider.notifier).markDisconnected();
       }
 
-      await BleService.forceCleanDisconnectBeforeUnlock(lock.id);
+      if (!LockConnectionHelper.hasPendingConnect(lock.id)) {
+        await BleService.forceCleanDisconnectBeforeUnlock(lock.id);
+      }
 
       if (mounted &&
           _connectingLockId == null &&
@@ -538,14 +546,6 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
           next.token != null &&
           !next.isConnecting) {
         _resetBusyConnectionState();
-      }
-      final deviceId = next.device?.remoteId.str;
-      if (deviceId != null &&
-          next.token != null &&
-          !next.isConnecting &&
-          !BleService.isDeviceConnected(deviceId)) {
-        BleDebugLog.ble('Provider/GATT mismatch for $deviceId — marking disconnected');
-        ref.read(bleProvider.notifier).markDisconnected();
       }
     });
     ref.listen(lockUnlockEventProvider, (previous, next) {

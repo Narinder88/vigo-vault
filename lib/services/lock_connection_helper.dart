@@ -102,7 +102,10 @@ class LockConnectionHelper {
     bool background = false,
   }) async {
     BleConnectionMonitor.stopMonitoring();
-    BleDebugLog.ble('Session connect start for $deviceId (background=$background)');
+    BleDebugLog.ble(
+      'Session connect start for $deviceId (background=$background'
+      '${background ? ", no short timeout, autoConnect" : ""})',
+    );
     bleNotifier.beginConnecting(deviceId);
 
     var sessionEstablished = false;
@@ -112,21 +115,25 @@ class LockConnectionHelper {
         await BleService.prepareFreshConnection(deviceId);
       }
 
-      final knownDeviceIds = locksNotifier?.allDeviceIds ?? const [];
-
       final connectFuture = background
-          ? (switchConnection
-              ? BleService.switchConnection(
-                  deviceId,
-                  knownDeviceIds: knownDeviceIds,
-                )
-              : BleService.connect(deviceId))
+          ? BleService.connectForBackgroundWarmup(deviceId)
           : BleService.connectForUnlock(deviceId);
 
-      final connected = await connectFuture.timeout(
-        _interactiveConnectTimeout,
-        onTimeout: () => false,
-      );
+      final bool connected;
+      if (background) {
+        connected = await connectFuture;
+      } else {
+        connected = await connectFuture.timeout(
+          _interactiveConnectTimeout,
+          onTimeout: () {
+            BleDebugLog.error(
+              'Session connect timed out after '
+              '${_interactiveConnectTimeout.inSeconds}s for $deviceId',
+            );
+            return false;
+          },
+        );
+      }
       if (!connected) {
         BleDebugLog.error('Session connect failed for $deviceId (timeout or GATT error)');
         if (!background) {
@@ -215,17 +222,24 @@ class LockConnectionHelper {
   }
 
   /// Waits for an in-flight dashboard connection before starting unlock.
-  static Future<void> awaitPendingConnect(String deviceId) async {
+  static Future<bool> awaitPendingConnect(String deviceId) async {
     final pending = _pendingConnectByDeviceId[deviceId];
     if (pending != null) {
-      await pending;
+      BleDebugLog.ble('Awaiting pending connect for $deviceId');
+      return pending;
     }
+    return false;
   }
 
   /// Apple Watch MethodChannel bridge only — uses tuned GATT unlock path.
   static Future<bool> triggerUnlock(String deviceId) async {
-    await awaitPendingConnect(deviceId);
-    await BleService.forceCleanDisconnectBeforeUnlock(deviceId);
+    final awaitedConnect = await awaitPendingConnect(deviceId);
+    if (awaitedConnect) {
+      BleDebugLog.tap('Pending connect finished for $deviceId — using live session');
+    }
+    if (!BleService.isDeviceConnected(deviceId)) {
+      await BleService.forceCleanDisconnectBeforeUnlock(deviceId);
+    }
     return BleService.unlockLock(deviceId);
   }
 

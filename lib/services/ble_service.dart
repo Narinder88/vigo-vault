@@ -73,6 +73,7 @@ class BleService {
   static const Duration _disconnectTimeout = Duration(seconds: 5);
   static const Duration _connectAttemptTimeout = Duration(seconds: 6);
   static const Duration _connectionTimeout = Duration(seconds: 10);
+  static const Duration _backgroundWarmupTimeout = Duration(seconds: 45);
   static const Duration _postAbortConnectDelay = Duration(milliseconds: 500);
   static const int _androidDisconnectDelayMs = 2000;
   static const Duration _scanPresenceTimeout = Duration(seconds: 4);
@@ -205,24 +206,35 @@ class BleService {
   static Future<BluetoothDevice> connectWithRetry(
     String deviceId, {
     int retryCount = 0,
+    bool backgroundWarmup = false,
   }) async {
     if (retryCount == 0) {
-      await _beginConnectSequence(deviceId);
+      if (backgroundWarmup) {
+        await _stopScanBeforeConnect();
+      } else {
+        await _beginConnectSequence(deviceId);
+      }
     } else {
       await _stopScanBeforeConnect();
     }
 
     final device = BluetoothDevice.fromId(deviceId);
+    final connectTimeout = backgroundWarmup
+        ? _backgroundWarmupTimeout
+        : _connectAttemptTimeout;
 
     try {
       try {
-        await device
-            .connect(
-              timeout: _connectAttemptTimeout,
-              license: License.free,
-              autoConnect: false,
-            )
-            .timeout(_connectAttemptTimeout);
+        final connectCall = device.connect(
+          timeout: connectTimeout,
+          license: License.free,
+          autoConnect: backgroundWarmup,
+        );
+        if (backgroundWarmup) {
+          await connectCall;
+        } else {
+          await connectCall.timeout(_connectAttemptTimeout);
+        }
       } on TimeoutException {
         await _abortPendingConnect(device);
         rethrow;
@@ -235,7 +247,7 @@ class BleService {
       }
 
       try {
-        await device.discoverServices().timeout(_connectAttemptTimeout);
+        await device.discoverServices().timeout(connectTimeout);
       } on TimeoutException {
         await _safeDisconnect(device);
         rethrow;
@@ -260,6 +272,7 @@ class BleService {
       return _retryConnectAfterBackoff(
         deviceId,
         retryCount: retryCount,
+        backgroundWarmup: backgroundWarmup,
       );
     }
   }
@@ -268,14 +281,18 @@ class BleService {
   static Future<BluetoothDevice> _retryConnectAfterBackoff(
     String deviceId, {
     required int retryCount,
+    bool backgroundWarmup = false,
   }) async {
     await Future<void>.delayed(_connectBackoffForRetry(retryCount));
     await _stopScanBeforeConnect();
-    await _ensureFullyDisconnected(deviceId);
+    if (!backgroundWarmup) {
+      await _ensureFullyDisconnected(deviceId);
+    }
 
     return connectWithRetry(
       deviceId,
       retryCount: retryCount + 1,
+      backgroundWarmup: backgroundWarmup,
     );
   }
 
@@ -1346,7 +1363,15 @@ class BleService {
     return runExclusive(() => _connectImpl(deviceId));
   }
 
-  static Future<bool> _connectImpl(String deviceId) async {
+  /// Dashboard warm-up: autoConnect, long native timeout, no adapter teardown.
+  static Future<bool> connectForBackgroundWarmup(String deviceId) {
+    return runExclusive(() => _connectImpl(deviceId, backgroundWarmup: true));
+  }
+
+  static Future<bool> _connectImpl(
+    String deviceId, {
+    bool backgroundWarmup = false,
+  }) async {
     final device = BluetoothDevice.fromId(deviceId);
 
     if (device.isConnected && _isValidToken(_deviceTokens[deviceId])) {
@@ -1362,13 +1387,19 @@ class BleService {
       _resetHandshakeState(deviceId);
     }
 
-    return _attemptConnect(deviceId);
+    return _attemptConnect(deviceId, backgroundWarmup: backgroundWarmup);
   }
 
   /// Starts a new connection cycle — [retryCount] is always reset to 0.
-  static Future<BluetoothDevice?> _connectDeviceWithRetry(String deviceId) async {
+  static Future<BluetoothDevice?> _connectDeviceWithRetry(
+    String deviceId, {
+    bool backgroundWarmup = false,
+  }) async {
     try {
-      return await connectWithRetry(deviceId);
+      return await connectWithRetry(
+        deviceId,
+        backgroundWarmup: backgroundWarmup,
+      );
     } on TimeoutException {
       await _handleConnectFailure(deviceId);
       return null;
@@ -1377,7 +1408,10 @@ class BleService {
     }
   }
 
-  static Future<bool> _attemptConnect(String deviceId) async {
+  static Future<bool> _attemptConnect(
+    String deviceId, {
+    bool backgroundWarmup = false,
+  }) async {
     StreamSubscription<BluetoothConnectionState>? connectionSubscription;
     var reachedConnectedState = false;
     var disconnectedDuringSetup = false;
@@ -1385,7 +1419,10 @@ class BleService {
     BluetoothDevice? device;
 
     try {
-      device = await _connectDeviceWithRetry(deviceId);
+      device = await _connectDeviceWithRetry(
+        deviceId,
+        backgroundWarmup: backgroundWarmup,
+      );
       if (device == null) {
         return false;
       }
