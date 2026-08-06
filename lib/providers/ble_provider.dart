@@ -1,3 +1,4 @@
+import 'package:fitness_snack_lock/services/ble_debug_log.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:flutter_riverpod/legacy.dart';
 
@@ -118,6 +119,9 @@ class BleProvider extends StateNotifier<BleData> {
   }
 
   void beginConnecting(String deviceId) {
+    BleDebugLog.ble(
+      'Provider: connecting -> $deviceId (was ${state.device?.remoteId.str ?? "none"})',
+    );
     state = (
       device: state.device,
       rssi: state.rssi,
@@ -131,6 +135,7 @@ class BleProvider extends StateNotifier<BleData> {
   }
 
   void endConnecting() {
+    BleDebugLog.ble('Provider: endConnecting (${state.connectingDeviceId ?? "none"})');
     state = (
       device: state.device,
       rssi: state.rssi,
@@ -144,6 +149,7 @@ class BleProvider extends StateNotifier<BleData> {
   }
 
   void markConnectFailed() {
+    BleDebugLog.error('Provider: connect failed (${state.connectingDeviceId ?? "none"})');
     state = (
       device: state.device,
       rssi: -100,
@@ -164,6 +170,10 @@ class BleProvider extends StateNotifier<BleData> {
     String? customDeviceName,
     bool requiresClaiming = false,
   }) {
+    BleDebugLog.ble(
+      'Provider: connected -> ${device.remoteId.str} '
+      '(token=${token.length >= 8 ? token.substring(0, 8) : token}...)',
+    );
     state = (
       device: device,
       rssi: rssi ?? state.rssi,
@@ -179,6 +189,9 @@ class BleProvider extends StateNotifier<BleData> {
   }
 
   void markDisconnected() {
+    BleDebugLog.ble(
+      'Provider: disconnected (${state.device?.remoteId.str ?? "none"})',
+    );
     state = (
       device: state.device,
       rssi: -100,
@@ -192,6 +205,7 @@ class BleProvider extends StateNotifier<BleData> {
   }
 
   void clearSession() {
+    BleDebugLog.ble('Provider: clearSession');
     state = (
       device: null,
       rssi: -100,

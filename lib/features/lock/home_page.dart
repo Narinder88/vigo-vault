@@ -16,6 +16,7 @@ import 'package:phosphoricons_flutter/phosphoricons_flutter.dart';
 
 import '../../services/ble_service.dart';
 import '../../services/ble_connection_monitor.dart';
+import '../../services/ble_debug_log.dart';
 import '../../services/lock_connection_helper.dart';
 import '../../services/pairing_service.dart';
 import '../../utils/rssi_utils.dart';
@@ -112,8 +113,6 @@ class _HomePageState extends ConsumerState<HomePage>
 
     BleConnectionMonitor.stopMonitoring();
     await BleService.releaseOnDemandConnection(lockId);
-
-    if (!mounted) return;
 
     final bleState = ref.read(bleProvider);
     if (bleState.device?.remoteId.str == lockId) {
@@ -228,6 +227,14 @@ class _HomePageState extends ConsumerState<HomePage>
   Future<void> _handleLockTap(String deviceId) async {
     if (_isUnlocking) return;
 
+    final bleState = ref.read(bleProvider);
+    BleDebugLog.tap(
+      'Lock screen tap $deviceId — '
+      'gatt=${BluetoothDevice.fromId(deviceId).isConnected} '
+      'auth=${BleService.isDeviceConnected(deviceId)} '
+      'provider=${bleState.device?.remoteId.str == deviceId && bleState.token != null}',
+    );
+
     setState(() => _isUnlocking = true);
     _startUnlockAnimation();
 
@@ -260,7 +267,8 @@ class _HomePageState extends ConsumerState<HomePage>
     } on PairingRequiredException {
       if (!mounted) return;
       await showPairingRequiredDialog(context);
-    } catch (_) {
+    } catch (error) {
+      BleDebugLog.error('Lock screen unlock exception: $error');
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(

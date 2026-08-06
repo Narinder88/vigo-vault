@@ -4,6 +4,7 @@ import 'package:fitness_snack_lock/providers/ble_provider.dart';
 import 'package:fitness_snack_lock/providers/notification_manager_provider.dart';
 import 'package:fitness_snack_lock/providers/saved_locks_provider.dart';
 import 'package:fitness_snack_lock/services/ble_connection_monitor.dart';
+import 'package:fitness_snack_lock/services/ble_debug_log.dart';
 import 'package:fitness_snack_lock/services/ble_service.dart';
 import 'package:fitness_snack_lock/services/pairing_service.dart';
 import 'package:fitness_snack_lock/services/saved_lock_storage.dart';
@@ -101,6 +102,7 @@ class LockConnectionHelper {
     bool background = false,
   }) async {
     BleConnectionMonitor.stopMonitoring();
+    BleDebugLog.ble('Session connect start for $deviceId (background=$background)');
     bleNotifier.beginConnecting(deviceId);
 
     var sessionEstablished = false;
@@ -126,6 +128,7 @@ class LockConnectionHelper {
         onTimeout: () => false,
       );
       if (!connected) {
+        BleDebugLog.error('Session connect failed for $deviceId (timeout or GATT error)');
         if (!background) {
           bleNotifier.markConnectFailed();
         }
@@ -134,6 +137,7 @@ class LockConnectionHelper {
 
       final token = BleService.tokenForDevice(deviceId);
       if (!isValidToken(token)) {
+        BleDebugLog.error('Session connect missing token for $deviceId');
         if (!background) {
           bleNotifier.markConnectFailed();
         }
@@ -182,8 +186,14 @@ class LockConnectionHelper {
         bleNotifier: bleNotifier,
       );
 
+      BleDebugLog.ble(
+        'Session connect success for $deviceId '
+        '(gatt=${BleService.isDeviceConnected(deviceId)})',
+      );
+
       return true;
-    } catch (_) {
+    } catch (error) {
+      BleDebugLog.error('Session connect exception for $deviceId: $error');
       if (!background) {
         bleNotifier.markConnectFailed();
       }
@@ -215,7 +225,7 @@ class LockConnectionHelper {
   /// Apple Watch MethodChannel bridge only — uses tuned GATT unlock path.
   static Future<bool> triggerUnlock(String deviceId) async {
     await awaitPendingConnect(deviceId);
-    await BleService.releaseStaleConnectionForUnlock(deviceId);
+    await BleService.forceCleanDisconnectBeforeUnlock(deviceId);
     return BleService.unlockLock(deviceId);
   }
 

@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io' show Platform;
 
+import 'package:fitness_snack_lock/services/ble_debug_log.dart';
 import 'package:fitness_snack_lock/services/data_service.dart';
 import 'package:fitness_snack_lock/services/pairing_service.dart';
 import 'package:fitness_snack_lock/services/paired_lock_storage.dart';
@@ -44,10 +45,18 @@ class BleService {
 
   static void _logHandshake(String message) {
     print('BLE Handshake: $message');
+    BleDebugLog.ble(message);
   }
 
   static void _logUnlock(String message) {
     print('BLE Unlock: $message');
+    if (message.contains('05 01 06') ||
+        message.contains('Unlocking') ||
+        message.contains('unlock')) {
+      BleDebugLog.write(message);
+    } else {
+      BleDebugLog.ble(message);
+    }
   }
 
   static Future<void> _connectionChain = Future.value();
@@ -363,6 +372,27 @@ class BleService {
     }
 
     await releaseOnDemandConnection(deviceId);
+  }
+
+  /// Forcefully tears down any non-idle GATT state before a new unlock attempt.
+  static Future<void> forceCleanDisconnectBeforeUnlock(String deviceId) async {
+    if (deviceId.isEmpty) return;
+
+    final device = BluetoothDevice.fromId(deviceId);
+    final gattConnected = device.isConnected;
+    final authConnected = isDeviceConnected(deviceId);
+
+    if (!gattConnected && !authConnected) {
+      BleDebugLog.ble('Pre-unlock: $deviceId cleanly disconnected');
+      return;
+    }
+
+    BleDebugLog.ble(
+      'Pre-unlock force reset for $deviceId '
+      '(gatt=$gattConnected auth=$authConnected)',
+    );
+    await resetDeviceConnection(deviceId);
+    await _waitForGattSettle();
   }
 
   static Future<void> disconnectDevice(String deviceId) async {
@@ -1908,7 +1938,7 @@ class BleService {
       _activeUnlockProfile = _BleUnlockProfile.phone;
       try {
         await _loadCredentialsForUnlock(deviceId);
-        await releaseStaleConnectionForUnlock(deviceId);
+        await forceCleanDisconnectBeforeUnlock(deviceId);
         final connected = await _connectImpl(deviceId);
         if (!connected) return false;
 
