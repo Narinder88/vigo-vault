@@ -1,9 +1,11 @@
 import Flutter
 import UIKit
+import WatchConnectivity
 
 @main
-@objc class AppDelegate: FlutterAppDelegate {
+@objc class AppDelegate: FlutterAppDelegate, WCSessionDelegate {
   private let pairedLocksChannelName = "com.singh.fitnessssnacklock/paired_locks"
+  private var watchChannel: FlutterMethodChannel?
 
   override func application(
     _ application: UIApplication,
@@ -22,9 +24,53 @@ import UIKit
 
     if let controller = window?.rootViewController as? FlutterViewController {
       setupPairedLocksChannel(controller: controller)
+      setupWatchChannel(controller: controller)
+    }
+
+    if WCSession.isSupported() {
+      WCSession.default.delegate = self
+      WCSession.default.activate()
     }
 
     return result
+  }
+
+  private func setupWatchChannel(controller: FlutterViewController) {
+    watchChannel = FlutterMethodChannel(
+      name: "com.singh.vigovault/watch",
+      binaryMessenger: controller.binaryMessenger
+    )
+
+    watchChannel?.setMethodCallHandler { call, result in
+      switch call.method {
+      case "sendToWatch":
+        let message = call.arguments as? [String: Any] ?? [:]
+        WCSession.default.sendMessage(message, replyHandler: nil, errorHandler: nil)
+        result(nil)
+      default:
+        result(FlutterMethodNotImplemented)
+      }
+    }
+  }
+
+  func session(
+    _ session: WCSession,
+    activationDidCompleteWith activationState: WCSessionActivationState,
+    error: Error?
+  ) {
+  }
+
+  func sessionDidBecomeInactive(_ session: WCSession) {
+  }
+
+  func sessionDidDeactivate(_ session: WCSession) {
+    session.activate()
+  }
+
+  func session(_ session: WCSession, didReceiveMessage message: [String: Any]) {
+    DispatchQueue.main.async {
+      self.watchChannel?.invokeMethod("fromWatch", arguments: message)
+    }
   }
 
   private func setupPairedLocksChannel(controller: FlutterViewController) {

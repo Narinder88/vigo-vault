@@ -19,6 +19,7 @@
 		97C147011CF9000F007C117D /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 97C146FF1CF9000F007C117D /* LaunchScreen.storyboard */; };
 		A7F3E2D1C0B9A8765432100A /* VigoLockWatchApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7F3E2D1C0B9A87654321001 /* VigoLockWatchApp.swift */; };
 		A7F3E2D1C0B9A8765432100B /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7F3E2D1C0B9A87654321002 /* ContentView.swift */; };
+		B2WATCHVM002C0B9A87654321017 /* WatchViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2WATCHVM001C0B9A87654321016 /* WatchViewModel.swift */; };
 		A7F3E2D1C0B9A8765432100E /* VigoLockWatch.app in Embed Watch Content */ = {isa = PBXBuildFile; fileRef = A7F3E2D1C0B9A87654321004 /* VigoLockWatch.app */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		B8E4F1A22C7660F600F52038 /* PairedLockSecureStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8E4F1A12C7660F600F52038 /* PairedLockSecureStorage.swift */; };
 		C7638317EEAA6EF1B0BA2A9B /* Pods_RunnerTests.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0C411A760A4E36CC9BC08795 /* Pods_RunnerTests.framework */; };
@@ -93,6 +94,7 @@
 		A5B1068A2E91F8440C3B52CA /* Pods-Runner.profile.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Runner.profile.xcconfig"; path = "Target Support Files/Pods-Runner/Pods-Runner.profile.xcconfig"; sourceTree = "<group>"; };
 		A7F3E2D1C0B9A87654321001 /* VigoLockWatchApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VigoLockWatchApp.swift; sourceTree = "<group>"; };
 		A7F3E2D1C0B9A87654321002 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		B2WATCHVM001C0B9A87654321016 /* WatchViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchViewModel.swift; sourceTree = "<group>"; };
 		A7F3E2D1C0B9A87654321004 /* VigoLockWatch.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = VigoLockWatch.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A7F3E2D1C0B9A87654321015 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		B8E4F1A12C7660F600F52038 /* PairedLockSecureStorage.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = PairedLockSecureStorage.swift; sourceTree = "<group>"; };
@@ -200,6 +202,7 @@
 			children = (
 				A7F3E2D1C0B9A87654321001 /* VigoLockWatchApp.swift */,
 				A7F3E2D1C0B9A87654321002 /* ContentView.swift */,
+				B2WATCHVM001C0B9A87654321016 /* WatchViewModel.swift */,
 				A2B647AF870CC19D99A8C84A /* Assets.xcassets */,
 				A7F3E2D1C0B9A87654321015 /* Info.plist */,
 			);
@@ -493,6 +496,7 @@
 			files = (
 				A7F3E2D1C0B9A8765432100A /* VigoLockWatchApp.swift in Sources */,
 				A7F3E2D1C0B9A8765432100B /* ContentView.swift in Sources */,
+				B2WATCHVM002C0B9A87654321017 /* WatchViewModel.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

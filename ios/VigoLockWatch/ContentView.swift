@@ -1,17 +1,29 @@
 import SwiftUI
 
 struct ContentView: View {
+    @StateObject var viewModel = WatchViewModel()
+
     var body: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "lock.fill")
-                .font(.title)
-            Text("Vigo Vault")
-                .font(.headline)
-            Text("Lock control coming soon")
-                .font(.caption)
+        VStack(spacing: 16) {
+            Button(action: {
+                viewModel.sendToggleLock()
+            }) {
+                Image(systemName: "lock.fill")
+                    .font(.system(size: 52, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: 120, height: 120)
+                    .background(
+                        Circle()
+                            .fill(Color.green.gradient)
+                    )
+            }
+            .buttonStyle(.plain)
+
+            Text("Tap to toggle lock")
+                .font(.caption2)
                 .foregroundStyle(.secondary)
         }
-        .padding()
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
