@@ -16,6 +16,7 @@ import 'package:fitness_snack_lock/services/saved_lock_storage.dart';
 import 'package:fitness_snack_lock/utils/rssi_utils.dart';
 import 'package:fitness_snack_lock/widgets/rename_lock_dialog.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:phosphoricons_flutter/phosphoricons_flutter.dart';
 import 'package:zo_animated_border/zo_animated_border.dart';
@@ -129,6 +130,48 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
         ref.read(bleProvider).isConnecting;
   }
 
+  Future<void> _showOnScreenError(Object error, StackTrace stackTrace) async {
+    if (!mounted) return;
+
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          backgroundColor: _cardColor,
+          title: const Text(
+            'Tap to Open Error',
+            style: TextStyle(color: _labelColor),
+          ),
+          content: SingleChildScrollView(
+            child: SelectableText(
+              '$error\n\n$stackTrace',
+              style: const TextStyle(
+                color: _subtextColor,
+                fontSize: 13,
+                height: 1.4,
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('Close'),
+            ),
+            TextButton(
+              onPressed: () {
+                Clipboard.setData(
+                  ClipboardData(text: '$error\n\n$stackTrace'),
+                );
+                Navigator.of(dialogContext).pop();
+              },
+              child: const Text('Copy details'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
   Future<void> _navigateToLockScreen(SavedLock lock) async {
     await ref.read(savedLocksProvider.notifier).setActiveLockId(lock.id);
     if (!mounted) return;
@@ -157,23 +200,29 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
   }
 
   Future<void> _openLock(SavedLock lock) async {
-    if (_isLockConnected(lock)) {
-      await _navigateToLockScreen(lock);
-      return;
-    }
-
-    if (_isCardConnecting(lock)) return;
-
-    setState(() => _connectingLockId = lock.id);
-    final bleNotifier = ref.read(bleProvider.notifier);
-
     try {
+      _resetBusyConnectionState();
+
+      if (_isLockConnected(lock)) {
+        await _navigateToLockScreen(lock);
+        return;
+      }
+
+      if (_isCardConnecting(lock)) return;
+
+      if (mounted) {
+        setState(() => _connectingLockId = lock.id);
+      }
+      final bleNotifier = ref.read(bleProvider.notifier);
+
       final connected = await LockConnectionHelper.connectAndRestoreSession(
         deviceId: lock.id,
         bleNotifier: bleNotifier,
         locksNotifier: ref.read(savedLocksProvider.notifier),
         notificationManager: ref.read(notificationManagerProvider.notifier),
       );
+
+      _resetBusyConnectionState();
 
       if (!mounted) return;
 
@@ -184,19 +233,15 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
 
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Could not connect to the lock. Move closer and try again.'),
+          content: Text(
+            'Could not connect to the lock. Move closer and try again.',
+          ),
           behavior: SnackBarBehavior.floating,
         ),
       );
-    } catch (error) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Could not open lock. Please try again.'),
-            behavior: SnackBarBehavior.floating,
-          ),
-        );
-      }
+    } catch (e, stackTrace) {
+      _resetBusyConnectionState();
+      await _showOnScreenError(e, stackTrace);
     } finally {
       _resetBusyConnectionState();
     }
@@ -409,6 +454,8 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
 
   @override
   Widget build(BuildContext context) {
+    final bleState = ref.watch(bleProvider);
+
     ref.listen(bleProvider, (previous, next) {
       if (previous?.isConnecting == true && !next.isConnecting) {
         _resetBusyConnectionState();
@@ -490,7 +537,8 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
                       final lock = locks[index];
                       final isConnected = _isLockConnected(lock);
                       final isSearching = false;
-                      final isConnecting = _isCardConnecting(lock);
+                      final isConnecting = !_isLockConnected(lock) &&
+                          (_connectingLockId == lock.id || bleState.isConnecting);
                       final telemetry = _lockTelemetry(lock);
 
                       return Padding(
