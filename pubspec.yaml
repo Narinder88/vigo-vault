@@ -1,7 +1,7 @@
 name: fitness_snack_lock
 description: "Vigo Vault"
 publish_to: "none"
-version: 1.0.1+199
+version: 1.0.1+200
 
 environment:
   sdk: ^3.5.0
