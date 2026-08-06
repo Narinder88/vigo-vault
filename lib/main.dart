@@ -4,6 +4,7 @@ import 'package:fitness_snack_lock/providers/ble_provider.dart';
 import 'package:fitness_snack_lock/providers/saved_locks_provider.dart';
 import 'package:fitness_snack_lock/services/ble_connection_monitor.dart';
 import 'package:fitness_snack_lock/services/ble_service.dart';
+import 'package:fitness_snack_lock/services/watch_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_easyloading/flutter_easyloading.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -16,6 +17,7 @@ import 'features/onboarding/splash_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  WatchService();
   await bootstrap();
 
   runApp(
