@@ -232,6 +232,7 @@ class _HomePageState extends ConsumerState<HomePage>
     _startUnlockAnimation();
 
     try {
+      await LockConnectionHelper.awaitPendingConnect(deviceId);
       final isUnlocked = await BleService.connectAndUnLock(deviceId);
 
       if (!mounted) return;

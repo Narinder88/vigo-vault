@@ -12,6 +12,14 @@ import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 class LockConnectionHelper {
   static const Duration _interactiveConnectTimeout = Duration(seconds: 5);
 
+  static final Map<String, Future<bool>> _pendingConnectByDeviceId = {};
+
+  static bool hasPendingConnect(String deviceId) =>
+      _pendingConnectByDeviceId.containsKey(deviceId);
+
+  static Future<bool>? pendingConnectFuture(String deviceId) =>
+      _pendingConnectByDeviceId[deviceId];
+
   static bool isValidToken(String? token) {
     return token != null && token.isNotEmpty;
   }
@@ -61,11 +69,39 @@ class LockConnectionHelper {
     NotificationManagerProvider? notificationManager,
     bool switchConnection = true,
     bool background = false,
+  }) {
+    final existing = _pendingConnectByDeviceId[deviceId];
+    if (existing != null) {
+      return existing;
+    }
+
+    final connectTask = _connectAndRestoreSessionImpl(
+      deviceId: deviceId,
+      bleNotifier: bleNotifier,
+      locksNotifier: locksNotifier,
+      notificationManager: notificationManager,
+      switchConnection: switchConnection,
+      background: background,
+    );
+
+    _pendingConnectByDeviceId[deviceId] = connectTask;
+    return connectTask.whenComplete(() {
+      if (_pendingConnectByDeviceId[deviceId] == connectTask) {
+        _pendingConnectByDeviceId.remove(deviceId);
+      }
+    });
+  }
+
+  static Future<bool> _connectAndRestoreSessionImpl({
+    required String deviceId,
+    required BleProvider bleNotifier,
+    SavedLocksNotifier? locksNotifier,
+    NotificationManagerProvider? notificationManager,
+    bool switchConnection = true,
+    bool background = false,
   }) async {
     BleConnectionMonitor.stopMonitoring();
-    if (!background) {
-      bleNotifier.beginConnecting(deviceId);
-    }
+    bleNotifier.beginConnecting(deviceId);
 
     var sessionEstablished = false;
 
@@ -141,6 +177,11 @@ class LockConnectionHelper {
         customDeviceName: displayName,
       );
 
+      BleConnectionMonitor.startMonitoring(
+        deviceId: deviceId,
+        bleNotifier: bleNotifier,
+      );
+
       return true;
     } catch (_) {
       if (!background) {
@@ -148,14 +189,14 @@ class LockConnectionHelper {
       }
       return false;
     } finally {
-      if (sessionEstablished || BleService.isDeviceConnected(deviceId)) {
-        await BleService.releaseOnDemandConnection(deviceId);
-      }
-      BleConnectionMonitor.stopMonitoring();
-      if (!background) {
-        if (!sessionEstablished) {
+      if (!sessionEstablished) {
+        if (BleService.isDeviceConnected(deviceId)) {
+          await BleService.releaseOnDemandConnection(deviceId);
+        }
+        if (!background) {
           bleNotifier.clearSession();
         }
+        BleConnectionMonitor.stopMonitoring();
       }
       if (bleNotifier.value.isConnecting) {
         bleNotifier.endConnecting();
@@ -163,8 +204,17 @@ class LockConnectionHelper {
     }
   }
 
+  /// Waits for an in-flight dashboard connection before starting unlock.
+  static Future<void> awaitPendingConnect(String deviceId) async {
+    final pending = _pendingConnectByDeviceId[deviceId];
+    if (pending != null) {
+      await pending;
+    }
+  }
+
   /// Apple Watch MethodChannel bridge only — uses tuned GATT unlock path.
   static Future<bool> triggerUnlock(String deviceId) async {
+    await awaitPendingConnect(deviceId);
     await BleService.releaseStaleConnectionForUnlock(deviceId);
     return BleService.unlockLock(deviceId);
   }

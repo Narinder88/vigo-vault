@@ -124,10 +124,11 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
     return _hasBleSession(lock);
   }
 
-  bool _isCardConnecting(SavedLock lock) {
+  bool _isCardConnecting(SavedLock lock, BleData bleState) {
     if (_isLockConnected(lock)) return false;
     return _connectingLockId == lock.id ||
-        ref.read(bleProvider).isConnecting;
+        bleState.isConnecting ||
+        LockConnectionHelper.hasPendingConnect(lock.id);
   }
 
   Future<void> _showOnScreenError(Object error, StackTrace stackTrace) async {
@@ -201,28 +202,24 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
 
   Future<void> _openLock(SavedLock lock) async {
     try {
-      _resetBusyConnectionState();
-
       if (_isLockConnected(lock)) {
         await _navigateToLockScreen(lock);
         return;
       }
 
-      if (_isCardConnecting(lock)) return;
-
-      if (mounted) {
+      if (mounted &&
+          _connectingLockId == null &&
+          !LockConnectionHelper.hasPendingConnect(lock.id)) {
         setState(() => _connectingLockId = lock.id);
       }
-      final bleNotifier = ref.read(bleProvider.notifier);
 
+      final bleNotifier = ref.read(bleProvider.notifier);
       final connected = await LockConnectionHelper.connectAndRestoreSession(
         deviceId: lock.id,
         bleNotifier: bleNotifier,
         locksNotifier: ref.read(savedLocksProvider.notifier),
         notificationManager: ref.read(notificationManagerProvider.notifier),
       );
-
-      _resetBusyConnectionState();
 
       if (!mounted) return;
 
@@ -240,7 +237,6 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
         ),
       );
     } catch (e, stackTrace) {
-      _resetBusyConnectionState();
       await _showOnScreenError(e, stackTrace);
     } finally {
       _resetBusyConnectionState();
@@ -537,8 +533,7 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
                       final lock = locks[index];
                       final isConnected = _isLockConnected(lock);
                       final isSearching = false;
-                      final isConnecting = !_isLockConnected(lock) &&
-                          (_connectingLockId == lock.id || bleState.isConnecting);
+                      final isConnecting = _isCardConnecting(lock, bleState);
                       final telemetry = _lockTelemetry(lock);
 
                       return Padding(
