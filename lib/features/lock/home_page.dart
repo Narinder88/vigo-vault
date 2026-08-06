@@ -230,6 +230,9 @@ class _HomePageState extends ConsumerState<HomePage>
     } on LockAuthenticationException {
       if (!mounted) return;
       await showLockAuthenticationDialog(context);
+    } on PairingRequiredException {
+      if (!mounted) return;
+      await showPairingRequiredDialog(context);
     } catch (_) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(

@@ -53,6 +53,8 @@ class PairingService {
     for (final deviceId in deviceIds) {
       if (!await PairedLockStorage.isPaired(deviceId)) {
         await PairedLockStorage.pair(deviceId);
+      } else {
+        await PairedLockStorage.ensureSecretKey(deviceId);
       }
     }
   }

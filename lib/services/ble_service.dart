@@ -1,8 +1,9 @@
 import 'dart:async';
 
-import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:fitness_snack_lock/services/data_service.dart';
 import 'package:fitness_snack_lock/services/pairing_service.dart';
+import 'package:fitness_snack_lock/services/paired_lock_storage.dart';
+import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 
 class BleService {
   static String currentEncryptKey = DataRequestPattern.defaultEncryptKey;
@@ -504,7 +505,32 @@ class BleService {
   static const List<int> _discreteBatteryLevels = [0, 20, 40, 60, 80, 100];
 
   static String _handshakeEncryptKey(String deviceId) {
+    final cached = _deviceEncryptKeys[deviceId];
+    if (cached != null && cached.isNotEmpty) {
+      return cached.toLowerCase();
+    }
     return DataRequestPattern.defaultEncryptKey.toLowerCase();
+  }
+
+  /// Loads the AES master key from secure storage before any handshake/unlock.
+  static Future<String> _loadCredentialsForUnlock(String deviceId) async {
+    await PairingService.ensurePairedForUnlock(deviceId);
+
+    final encryptKey = await PairedLockStorage.ensureSecretKey(deviceId);
+    if (encryptKey.isEmpty) {
+      _logHandshake('ERROR: AES master key unavailable for $deviceId');
+      throw LockAuthenticationException(
+        deviceId,
+        message:
+            'Lock encryption key is missing. Remove the lock and add it again.',
+      );
+    }
+
+    cacheDeviceEncryptKey(deviceId, encryptKey);
+    _logHandshake(
+      'Loaded AES master key for $deviceId (${encryptKey.substring(0, 8)}...)',
+    );
+    return encryptKey;
   }
 
   static const String _handshakeKeyLabel = 'Default';
@@ -1557,10 +1583,12 @@ class BleService {
     });
   }
 
-  /// Strict on-demand session: disconnect → connect → 06 01 AES handshake.
+  /// Strict on-demand session: credentials → disconnect → connect → 06 01 AES handshake.
   static Future<String> _prepareOnDemandUnlockSession(String deviceId) async {
     _deviceUnlockedThisSession.remove(deviceId);
     _resetHandshakeState(deviceId);
+
+    await _loadCredentialsForUnlock(deviceId);
 
     await _ensureFullyDisconnected(deviceId);
     await _waitBeforeConnect();
@@ -1735,6 +1763,8 @@ class BleService {
           responseTimeout: _unlockWriteTimeout,
         );
       } on LockAuthenticationException {
+        rethrow;
+      } on PairingRequiredException {
         rethrow;
       } on TimeoutException catch (error) {
         _logUnlock('Unlock timed out for $deviceId: $error');

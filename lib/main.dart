@@ -65,6 +65,9 @@ class _RootAppState extends ConsumerState<RootApp> with WidgetsBindingObserver {
     } on LockAuthenticationException {
       await WatchService.instance?.sendStateToWatch('auth_required');
       return false;
+    } on PairingRequiredException {
+      await WatchService.instance?.sendStateToWatch('failed');
+      return false;
     } catch (_) {
       await WatchService.instance?.sendStateToWatch('failed');
       return false;
