@@ -216,6 +216,16 @@ class _HomePageState extends ConsumerState<HomePage>
         setState(() => _isUnlocked = true);
         widget.onUnlockSuccess();
         await ref.read(inAppReviewProvider.notifier).countUp();
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: const Text(
+              'Connection timed out or unlock failed. Move closer to the lock and try again.',
+            ),
+            backgroundColor: _lockedColor,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
       }
     } on LockAuthenticationException {
       if (!mounted) return;

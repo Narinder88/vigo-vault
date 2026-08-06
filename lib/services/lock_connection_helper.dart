@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:fitness_snack_lock/providers/ble_provider.dart';
 import 'package:fitness_snack_lock/providers/notification_manager_provider.dart';
 import 'package:fitness_snack_lock/providers/saved_locks_provider.dart';
@@ -8,6 +10,8 @@ import 'package:fitness_snack_lock/services/saved_lock_storage.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 
 class LockConnectionHelper {
+  static const Duration _interactiveConnectTimeout = Duration(seconds: 5);
+
   static bool isValidToken(String? token) {
     return token != null && token.isNotEmpty;
   }
@@ -72,12 +76,19 @@ class LockConnectionHelper {
 
       final knownDeviceIds = locksNotifier?.allDeviceIds ?? const [];
 
-      final connected = switchConnection
-          ? await BleService.switchConnection(
-              deviceId,
-              knownDeviceIds: knownDeviceIds,
-            )
-          : await BleService.connect(deviceId);
+      final connectFuture = background
+          ? (switchConnection
+              ? BleService.switchConnection(
+                  deviceId,
+                  knownDeviceIds: knownDeviceIds,
+                )
+              : BleService.connect(deviceId))
+          : BleService.connectForUnlock(deviceId);
+
+      final connected = await connectFuture.timeout(
+        _interactiveConnectTimeout,
+        onTimeout: () => false,
+      );
       if (!connected) {
         if (!background) {
           bleNotifier.markConnectFailed();

@@ -472,6 +472,8 @@ class BleService {
   static const Duration _streamResponseTimeout = Duration(seconds: 2);
   static const Duration _handshakeTimeout = Duration(seconds: 3);
   static const Duration _handshakeNotifyTimeout = Duration(seconds: 3);
+  static const Duration _unlockConnectTimeout = Duration(seconds: 5);
+  static const Duration _unlockWriteTimeout = Duration(seconds: 5);
   static const Duration _batteryReadTimeout = Duration(seconds: 3);
   static const List<int> _discreteBatteryLevels = [0, 20, 40, 60, 80, 100];
 
@@ -1439,7 +1441,7 @@ class BleService {
         payload,
         writeCharacteristic: writeCharacteristic,
         encryptKey: encryptKeyOverride,
-        writeTimeout: _handshakeTimeout.inSeconds,
+        writeTimeout: timeout.inSeconds.clamp(1, 30),
         debugLabel: debugLabel,
       );
       acceptNotifications = true;
@@ -1529,9 +1531,91 @@ class BleService {
     });
   }
 
+  static Future<bool> _ensureConnectedForUnlock(String deviceId) async {
+    final device = BluetoothDevice.fromId(deviceId);
+
+    if (device.isConnected && _isValidToken(_deviceTokens[deviceId])) {
+      try {
+        await device.discoverServices().timeout(const Duration(seconds: 2));
+        _activeDeviceId = deviceId;
+        _logUnlock('Reusing live connection for unlock ($deviceId)');
+        return true;
+      } on TimeoutException {
+        _logUnlock('Stale BLE link for $deviceId — reconnecting');
+      } catch (_) {
+        _logUnlock('Stale BLE link for $deviceId — reconnecting');
+      }
+      await _discardDeviceSession(deviceId);
+    } else if (device.isConnected) {
+      await _discardDeviceSession(deviceId);
+    } else {
+      _resetHandshakeState(deviceId);
+    }
+
+    return _connectForUnlock(deviceId);
+  }
+
+  /// Fast single-attempt connect + handshake for unlock/toggle flows.
+  static Future<bool> connectForUnlock(String deviceId) {
+    return runExclusive(() => _connectForUnlock(deviceId));
+  }
+
+  static Future<bool> _connectForUnlock(String deviceId) async {
+    _logUnlock('Connecting for unlock: $deviceId (${_unlockConnectTimeout.inSeconds}s timeout)');
+    final device = BluetoothDevice.fromId(deviceId);
+
+    try {
+      await _stopScanBeforeConnect();
+      if (!device.isConnected) {
+        await _ensureFullyDisconnected(deviceId);
+      }
+
+      await device
+          .connect(
+            timeout: _unlockConnectTimeout,
+            license: License.free,
+            autoConnect: false,
+          )
+          .timeout(_unlockConnectTimeout);
+
+      if (!device.isConnected) {
+        _logUnlock('Connect for unlock failed: device not connected');
+        return false;
+      }
+
+      await device.discoverServices().timeout(_unlockConnectTimeout);
+
+      final token = await requestToken(
+        deviceId,
+        ignoreConnect: true,
+      ).timeout(_unlockConnectTimeout, onTimeout: () => null);
+
+      if (!_isValidToken(token)) {
+        _logUnlock('Connect for unlock failed: no valid token');
+        await _safeDisconnect(device);
+        return false;
+      }
+
+      _deviceTokens[deviceId] = token!;
+      _activeDeviceId = deviceId;
+      _logUnlock('Connect for unlock succeeded for $deviceId');
+      return true;
+    } on TimeoutException catch (error) {
+      _logUnlock('Connect for unlock timed out for $deviceId: $error');
+      await _abortPendingConnect(device);
+      await _handleConnectFailure(deviceId);
+      return false;
+    } catch (error) {
+      _logUnlock('Connect for unlock failed for $deviceId: $error');
+      await _handleConnectFailure(deviceId);
+      return false;
+    }
+  }
+
   static Future<bool> _requestToUnlockCore(
     String deviceId, {
     bool forceFresh = false,
+    Duration responseTimeout = _unlockWriteTimeout,
   }) async {
     if (forceFresh) {
       _logUnlock('Sending fresh 05 01 06 unlock for $deviceId (manual unlock)');
@@ -1559,6 +1643,7 @@ class BleService {
       unlockFrame,
       encryptKeyOverride: encryptKey,
       debugLabel: 'unlock',
+      timeout: responseTimeout,
     );
 
     if (await _isAuthFailureResponse(
@@ -1582,12 +1667,24 @@ class BleService {
   static Future<bool> connectAndUnLock(String deviceId) {
     return runExclusive(() async {
       try {
-        final connected = await _connectImpl(deviceId);
-        if (!connected) return false;
+        if (!await _ensureConnectedForUnlock(deviceId)) {
+          _logUnlock('Unlock aborted: could not connect to $deviceId');
+          return false;
+        }
 
-        return await _requestToUnlockCore(deviceId, forceFresh: true);
+        return await _requestToUnlockCore(
+          deviceId,
+          forceFresh: true,
+          responseTimeout: _unlockWriteTimeout,
+        );
       } on LockAuthenticationException {
         rethrow;
+      } on TimeoutException catch (error) {
+        _logUnlock('Unlock timed out for $deviceId: $error');
+        return false;
+      } catch (error) {
+        _logUnlock('Unlock failed for $deviceId: $error');
+        return false;
       } finally {
         await _releaseOnDemandConnectionInternal(deviceId);
       }

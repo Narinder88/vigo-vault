@@ -21,9 +21,12 @@ class WatchViewModel: NSObject, ObservableObject, WCSessionDelegate {
         isSpinning = true
         WCSession.default.sendMessage(
             ["action": "toggleLock"],
-            replyHandler: { _ in
+            replyHandler: { reply in
                 DispatchQueue.main.async {
                     self.isSpinning = false
+                    if let status = reply["status"] as? String {
+                        print("Watch unlock reply: \(status)")
+                    }
                 }
             },
             errorHandler: { error in

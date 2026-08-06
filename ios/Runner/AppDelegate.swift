@@ -73,6 +73,32 @@ import WatchConnectivity
     }
   }
 
+  func session(
+    _ session: WCSession,
+    didReceiveMessage message: [String: Any],
+    replyHandler: @escaping ([String: Any]) -> Void
+  ) {
+    DispatchQueue.main.async {
+      guard let channel = self.watchChannel else {
+        replyHandler(["status": "failed", "error": "channel_unavailable"])
+        return
+      }
+
+      channel.invokeMethod("fromWatch", arguments: message) { result in
+        if let response = result as? [String: Any] {
+          replyHandler(response)
+        } else if let error = result as? FlutterError {
+          replyHandler([
+            "status": "failed",
+            "error": error.message ?? "unknown",
+          ])
+        } else {
+          replyHandler(["status": "failed"])
+        }
+      }
+    }
+  }
+
   private func setupPairedLocksChannel(controller: FlutterViewController) {
     let storage = PairedLockSecureStorage()
     let channel = FlutterMethodChannel(

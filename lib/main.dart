@@ -45,23 +45,29 @@ class _RootAppState extends ConsumerState<RootApp> with WidgetsBindingObserver {
     });
   }
 
-  Future<void> _handleWatchToggleLock() async {
+  Future<bool> _handleWatchToggleLock() async {
     final locksState = ref.read(savedLocksProvider);
     final lockId = locksState.primaryLockId ??
         locksState.activeLockId ??
         (locksState.locks.isNotEmpty ? locksState.locks.first.id : null);
 
-    if (lockId == null || lockId.isEmpty) return;
+    if (lockId == null || lockId.isEmpty) {
+      await WatchService.instance?.sendStateToWatch('failed');
+      return false;
+    }
 
     try {
       final isUnlocked = await BleService.connectAndUnLock(lockId);
-      if (isUnlocked) {
-        await WatchService.instance?.sendStateToWatch('unlocked');
-      }
+      await WatchService.instance?.sendStateToWatch(
+        isUnlocked ? 'unlocked' : 'failed',
+      );
+      return isUnlocked;
     } on LockAuthenticationException {
-      // Watch cannot show the auth dialog; user must unlock from the phone.
+      await WatchService.instance?.sendStateToWatch('auth_required');
+      return false;
     } catch (_) {
-      // Ignore transient BLE errors from watch-initiated unlock.
+      await WatchService.instance?.sendStateToWatch('failed');
+      return false;
     }
   }
 

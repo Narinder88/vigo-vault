@@ -1,6 +1,6 @@
 import 'package:flutter/services.dart';
 
-typedef WatchToggleLockCallback = Future<void> Function();
+typedef WatchToggleLockCallback = Future<bool> Function();
 
 class WatchService {
   WatchService() {
@@ -15,17 +15,25 @@ class WatchService {
 
   WatchToggleLockCallback? onToggleLock;
 
-  Future<void> _handleMethodCall(MethodCall call) async {
+  Future<dynamic> _handleMethodCall(MethodCall call) async {
     if (call.method != 'fromWatch') {
-      return;
+      return null;
     }
 
     final arguments = call.arguments;
     if (arguments is Map && arguments['action'] == 'toggleLock') {
       if (onToggleLock != null) {
-        await onToggleLock!();
+        try {
+          final success = await onToggleLock!();
+          return {'status': success ? 'unlocked' : 'failed'};
+        } catch (_) {
+          return {'status': 'failed'};
+        }
       }
+      return {'status': 'failed', 'error': 'handler_not_registered'};
     }
+
+    return null;
   }
 
   Future<void> sendStateToWatch(String state) async {

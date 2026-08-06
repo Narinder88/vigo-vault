@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:ui' show lerpDouble;
 
 import 'package:fitness_snack_lock/constants/app_branding.dart';
@@ -85,6 +86,9 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
         locksNotifier: ref.read(savedLocksProvider.notifier),
         notificationManager: ref.read(notificationManagerProvider.notifier),
         background: true,
+      ).timeout(
+        const Duration(seconds: 5),
+        onTimeout: () => false,
       );
     } finally {
       if (mounted) {
@@ -130,15 +134,6 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
     final bleNotifier = ref.read(bleProvider.notifier);
 
     try {
-      if (!BleService.isDeviceConnected(lock.id)) {
-        await LockConnectionHelper.connectAndRestoreSession(
-          deviceId: lock.id,
-          bleNotifier: bleNotifier,
-          locksNotifier: ref.read(savedLocksProvider.notifier),
-          notificationManager: ref.read(notificationManagerProvider.notifier),
-        );
-      }
-
       await ref.read(savedLocksProvider.notifier).setActiveLockId(lock.id);
 
       if (!mounted) return;
@@ -148,6 +143,15 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
           builder: (context) => LockControlPage(lockId: lock.id),
         ),
       );
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Could not open lock. Please try again.'),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
     } finally {
       if (mounted) {
         setState(() => _connectingLockId = null);
