@@ -334,6 +334,37 @@ class BleService {
     return device.isConnected && _isValidToken(_deviceTokens[deviceId]);
   }
 
+  /// Tears down a dangling GATT link before a new unlock attempt.
+  ///
+  /// Keeps a healthy authenticated session intact for the Watch fast path.
+  /// Only affects BLE — does not touch WatchConnectivity / MethodChannel listeners.
+  static Future<void> releaseStaleConnectionForUnlock(String deviceId) async {
+    if (deviceId.isEmpty) return;
+
+    final device = BluetoothDevice.fromId(deviceId);
+    if (!device.isConnected) return;
+
+    if (isDeviceConnected(deviceId)) {
+      try {
+        await device.discoverServices().timeout(const Duration(seconds: 2));
+        _logUnlock(
+          'Authenticated GATT session still healthy for $deviceId — keeping link',
+        );
+        return;
+      } catch (error) {
+        _logUnlock(
+          'Stale GATT for $deviceId (service discovery failed: $error) — releasing',
+        );
+      }
+    } else {
+      _logUnlock(
+        'Stale GATT for $deviceId (connected without valid token) — releasing',
+      );
+    }
+
+    await releaseOnDemandConnection(deviceId);
+  }
+
   static Future<void> disconnectDevice(String deviceId) async {
     await resetDeviceConnection(deviceId);
   }
@@ -1877,6 +1908,7 @@ class BleService {
       _activeUnlockProfile = _BleUnlockProfile.phone;
       try {
         await _loadCredentialsForUnlock(deviceId);
+        await releaseStaleConnectionForUnlock(deviceId);
         final connected = await _connectImpl(deviceId);
         if (!connected) return false;
 

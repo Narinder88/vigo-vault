@@ -164,7 +164,8 @@ class LockConnectionHelper {
   }
 
   /// Apple Watch MethodChannel bridge only — uses tuned GATT unlock path.
-  static Future<bool> triggerUnlock(String deviceId) {
+  static Future<bool> triggerUnlock(String deviceId) async {
+    await BleService.releaseStaleConnectionForUnlock(deviceId);
     return BleService.unlockLock(deviceId);
   }
 

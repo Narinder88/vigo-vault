@@ -15,6 +15,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:phosphoricons_flutter/phosphoricons_flutter.dart';
 
 import '../../services/ble_service.dart';
+import '../../services/ble_connection_monitor.dart';
 import '../../services/lock_connection_helper.dart';
 import '../../services/pairing_service.dart';
 import '../../utils/rssi_utils.dart';
@@ -98,9 +99,31 @@ class _HomePageState extends ConsumerState<HomePage>
 
   @override
   void dispose() {
+    unawaited(_releaseLockBleSession());
     _pulseController.dispose();
     _spinController.dispose();
     super.dispose();
+  }
+
+  Future<void> _releaseLockBleSession() async {
+    final lockId = widget.lockDeviceId ??
+        ref.read(bleProvider).device?.remoteId.str;
+    if (lockId == null || lockId.isEmpty) return;
+
+    BleConnectionMonitor.stopMonitoring();
+    await BleService.releaseOnDemandConnection(lockId);
+
+    if (!mounted) return;
+
+    final bleState = ref.read(bleProvider);
+    if (bleState.device?.remoteId.str == lockId) {
+      ref.read(bleProvider.notifier).markDisconnected();
+    }
+  }
+
+  Future<void> _handleBackToDashboard() async {
+    await _releaseLockBleSession();
+    widget.onBackToDashboard?.call();
   }
 
   void _openDrawer() => _scaffoldKey.currentState?.openDrawer();
@@ -433,7 +456,7 @@ class _HomePageState extends ConsumerState<HomePage>
                 _LockScreenHeader(
                   title: _headerTitle(device, bleState),
                   onMenuTap: _openDrawer,
-                  onBackTap: widget.onBackToDashboard,
+                  onBackTap: _handleBackToDashboard,
                 ),
                 _LockSubHeader(
                   deviceLabel: _deviceLabel(bleState, device: device).toUpperCase(),
@@ -470,7 +493,7 @@ class _HomePageState extends ConsumerState<HomePage>
               _LockScreenHeader(
                 title: _headerTitle(null, bleState),
                 onMenuTap: _openDrawer,
-                onBackTap: widget.onBackToDashboard,
+                onBackTap: _handleBackToDashboard,
               ),
               Expanded(
                 child: Center(
