@@ -142,11 +142,27 @@ class PairedLockStorage {
     return key != null && key.isNotEmpty;
   }
 
+  /// Normalizes AES-128 key hex read from Keychain / secure storage.
+  static String sanitizeAesKeyHex(String key) {
+    return key.replaceAll(RegExp(r'[\s\r\n:]'), '').toLowerCase();
+  }
+
+  static bool isValidAesKeyHex(String key) {
+    final normalized = sanitizeAesKeyHex(key);
+    return RegExp(r'^[0-9a-f]{32}$').hasMatch(normalized);
+  }
+
   /// Returns the stored AES master key, persisting the factory default when missing.
   static Future<String> ensureSecretKey(String deviceId) async {
     final existing = await getSecretKey(deviceId);
     if (existing != null && existing.isNotEmpty) {
-      return existing.toLowerCase();
+      final normalized = sanitizeAesKeyHex(existing);
+      if (isValidAesKeyHex(normalized)) {
+        if (normalized != existing) {
+          await saveSecretKey(deviceId, normalized);
+        }
+        return normalized;
+      }
     }
 
     const factoryKey = DataRequestPattern.defaultEncryptKey;

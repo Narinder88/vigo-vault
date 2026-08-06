@@ -1,8 +1,10 @@
 import 'dart:async';
+import 'dart:io' show Platform;
 
 import 'package:fitness_snack_lock/services/data_service.dart';
 import 'package:fitness_snack_lock/services/pairing_service.dart';
 import 'package:fitness_snack_lock/services/paired_lock_storage.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 
 class BleService {
@@ -501,8 +503,23 @@ class BleService {
   static const Duration _handshakeNotifyTimeout = Duration(seconds: 3);
   static const Duration _unlockConnectTimeout = Duration(seconds: 5);
   static const Duration _unlockWriteTimeout = Duration(seconds: 5);
+  static const Duration _iosBleSettleDelay = Duration(milliseconds: 150);
+  static const Duration _iosNotifyEnableDelay = Duration(milliseconds: 200);
   static const Duration _batteryReadTimeout = Duration(seconds: 3);
   static const List<int> _discreteBatteryLevels = [0, 20, 40, 60, 80, 100];
+
+  static bool get _isIosBle => !kIsWeb && Platform.isIOS;
+
+  static Future<void> _iosBleSettle(String reason) async {
+    if (!_isIosBle) return;
+    _logHandshake(
+      'iOS CoreBluetooth settle ($reason): ${_iosBleSettleDelay.inMilliseconds}ms',
+    );
+    await Future<void>.delayed(_iosBleSettleDelay);
+  }
+
+  static Duration get _notifyFlushDelay =>
+      _isIosBle ? _iosNotifyEnableDelay : const Duration(milliseconds: 150);
 
   static String _handshakeEncryptKey(String deviceId) {
     final cached = _deviceEncryptKeys[deviceId];
@@ -517,7 +534,7 @@ class BleService {
     await PairingService.ensurePairedForUnlock(deviceId);
 
     final encryptKey = await PairedLockStorage.ensureSecretKey(deviceId);
-    if (encryptKey.isEmpty) {
+    if (!PairedLockStorage.isValidAesKeyHex(encryptKey)) {
       _logHandshake('ERROR: AES master key unavailable for $deviceId');
       throw LockAuthenticationException(
         deviceId,
@@ -554,9 +571,10 @@ class BleService {
       await notifyCharacteristic
           .setNotifyValue(false)
           .timeout(_handshakeTimeout);
-      await Future<void>.delayed(const Duration(milliseconds: 150));
+      await Future<void>.delayed(_notifyFlushDelay);
       await notifyCharacteristic.setNotifyValue(true).timeout(_handshakeTimeout);
-      await Future<void>.delayed(const Duration(milliseconds: 150));
+      await Future<void>.delayed(_notifyFlushDelay);
+      await _iosBleSettle('after 36F6 notify enable');
     } catch (error) {
       _logHandshake('36F6 notify flush warning: $error');
     }
@@ -691,13 +709,19 @@ class BleService {
       );
     }
 
+    await _iosBleSettle('before 36F5 write${debugLabel != null ? ' ($debugLabel)' : ''}');
+
+    // Match Android WRITE_TYPE_DEFAULT: write-with-response, single 16-byte AES block.
     await writeCharacteristic
         .write(
           encryptedData,
-          allowLongWrite: true,
+          withoutResponse: false,
+          allowLongWrite: false,
           timeout: writeTimeout,
         )
         .timeout(Duration(seconds: writeTimeout));
+
+    await _iosBleSettle('after 36F5 write${debugLabel != null ? ' ($debugLabel)' : ''}');
   }
 
   static Future<void> _writeTokenChallenge(
@@ -774,9 +798,8 @@ class BleService {
       await _flushStaleNotifyBuffer(notifyCharacteristic);
 
       final completer = Completer<List<int>>();
-      var acceptNotifications = false;
       subscription = notifyCharacteristic.onValueReceived.listen((value) {
-        if (value.isEmpty || completer.isCompleted || !acceptNotifications) {
+        if (value.isEmpty || completer.isCompleted) {
           return;
         }
         completer.complete(List<int>.from(value));
@@ -789,7 +812,6 @@ class BleService {
         encryptKey: encryptKey,
         encryptKeyLabel: encryptKeyLabel,
       );
-      acceptNotifications = true;
       _logHandshake(
         '36F6 listening for first post-write notify ($encryptKeyLabel write key)',
       );
@@ -1147,7 +1169,8 @@ class BleService {
       await writeCharacteristic
           .write(
             payload,
-            allowLongWrite: true,
+            withoutResponse: false,
+            allowLongWrite: false,
             timeout: writeTimeout,
           )
           .timeout(Duration(seconds: writeTimeout));
@@ -1480,9 +1503,8 @@ class BleService {
       final previousValue = List<int>.from(notifyCharacteristic.lastValue);
 
       final completer = Completer<List<int>>();
-      var acceptNotifications = false;
       subscription = notifyCharacteristic.onValueReceived.listen((value) {
-        if (value.isEmpty || completer.isCompleted || !acceptNotifications) {
+        if (value.isEmpty || completer.isCompleted) {
           return;
         }
         completer.complete(List<int>.from(value));
@@ -1496,7 +1518,6 @@ class BleService {
         writeTimeout: timeout.inSeconds.clamp(1, 30),
         debugLabel: debugLabel,
       );
-      acceptNotifications = true;
       _logUnlock(
         '${debugLabel ?? 'command'}: 36F6 listening for first post-write notify',
       );
@@ -1631,6 +1652,7 @@ class BleService {
     if (_isValidToken(token)) {
       cacheDeviceEncryptKey(deviceId, _handshakeEncryptKey(deviceId));
       _deviceTokens[deviceId] = token!;
+      await _iosBleSettle('after 06 01 token response before unlock');
       return token;
     }
 
@@ -1672,6 +1694,7 @@ class BleService {
       }
 
       await device.discoverServices().timeout(_unlockConnectTimeout);
+      await _iosBleSettle('after service discovery');
 
       _logUnlock('GATT link ready for unlock handshake ($deviceId)');
       return true;
@@ -1755,6 +1778,7 @@ class BleService {
     return runExclusive(() async {
       try {
         final sessionToken = await _prepareOnDemandUnlockSession(deviceId);
+        await _iosBleSettle('post-handshake before 05 01 06 unlock');
 
         return await _requestToUnlockCore(
           deviceId,

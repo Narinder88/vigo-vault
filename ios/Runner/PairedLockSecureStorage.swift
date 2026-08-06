@@ -33,7 +33,14 @@ final class PairedLockSecureStorage {
     }
 
     func getSecretKey(deviceId: String) -> String? {
-        return getSecretKeys()[deviceId]
+        guard let raw = getSecretKeys()[deviceId] else {
+            return nil
+        }
+        let normalized = raw
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: ":", with: "")
+            .lowercased()
+        return normalized.isEmpty ? nil : normalized
     }
 
     func saveSecretKey(deviceId: String, secretKey: String) {
