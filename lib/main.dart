@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:fitness_snack_lock/providers/ble_provider.dart';
+import 'package:fitness_snack_lock/providers/lock_unlock_event_provider.dart';
 import 'package:fitness_snack_lock/providers/saved_locks_provider.dart';
 import 'package:fitness_snack_lock/services/ble_connection_monitor.dart';
 import 'package:fitness_snack_lock/services/ble_service.dart';
@@ -58,6 +59,10 @@ class _RootAppState extends ConsumerState<RootApp> with WidgetsBindingObserver {
 
     try {
       final isUnlocked = await BleService.connectAndUnLock(lockId);
+      if (isUnlocked) {
+        notifyLockUnlockSuccess(ref);
+        ref.read(bleProvider.notifier).endConnecting();
+      }
       await WatchService.instance?.sendStateToWatch(
         isUnlocked ? 'unlocked' : 'failed',
       );

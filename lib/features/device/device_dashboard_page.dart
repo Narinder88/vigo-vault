@@ -6,6 +6,7 @@ import 'package:fitness_snack_lock/features/device/device_scanning_page/device_s
 import 'package:fitness_snack_lock/features/lock/home_page.dart';
 import 'package:fitness_snack_lock/models/saved_lock.dart';
 import 'package:fitness_snack_lock/providers/ble_provider.dart';
+import 'package:fitness_snack_lock/providers/lock_unlock_event_provider.dart';
 import 'package:fitness_snack_lock/providers/notification_manager_provider.dart';
 import 'package:fitness_snack_lock/providers/saved_locks_provider.dart';
 import 'package:fitness_snack_lock/services/ble_connection_monitor.dart';
@@ -377,6 +378,11 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
       if (previous?.isConnecting == true && !next.isConnecting) {
         _resetBusyConnectionState();
       }
+    });
+    ref.listen(lockUnlockEventProvider, (previous, next) {
+      if (previous == next) return;
+      _resetBusyConnectionState();
+      ref.read(bleProvider.notifier).endConnecting();
     });
 
     final locksState = ref.watch(savedLocksProvider);

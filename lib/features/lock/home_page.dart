@@ -4,6 +4,7 @@ import 'package:fitness_snack_lock/constants/app_branding.dart';
 import 'package:fitness_snack_lock/features/device/device_scanning_page/device_scanning_page.dart';
 import 'package:fitness_snack_lock/providers/ble_provider.dart';
 import 'package:fitness_snack_lock/providers/in_app_review_provider.dart';
+import 'package:fitness_snack_lock/providers/lock_unlock_event_provider.dart';
 import 'package:fitness_snack_lock/providers/notification_manager_provider.dart';
 import 'package:fitness_snack_lock/providers/saved_locks_provider.dart';
 import 'package:fitness_snack_lock/widgets/smart_lock_connector.dart';
@@ -215,6 +216,8 @@ class _HomePageState extends ConsumerState<HomePage>
       if (isUnlocked) {
         setState(() => _isUnlocked = true);
         widget.onUnlockSuccess();
+        notifyLockUnlockSuccess(ref);
+        ref.read(bleProvider.notifier).endConnecting();
         await ref.read(inAppReviewProvider.notifier).countUp();
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -397,6 +400,17 @@ class _HomePageState extends ConsumerState<HomePage>
 
   @override
   Widget build(BuildContext context) {
+    ref.listen(lockUnlockEventProvider, (previous, next) {
+      if (previous == next) return;
+      _stopUnlockAnimation();
+      if (mounted) {
+        setState(() {
+          _isUnlocked = true;
+          _isUnlocking = false;
+        });
+      }
+    });
+
     ref.watch(savedLocksProvider);
     final bleState = ref.watch(bleProvider);
     final lockId = widget.lockDeviceId;

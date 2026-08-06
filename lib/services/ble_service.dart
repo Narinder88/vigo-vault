@@ -505,6 +505,7 @@ class BleService {
   static const Duration _unlockWriteTimeout = Duration(seconds: 5);
   static const Duration _iosBleSettleDelay = Duration(milliseconds: 150);
   static const Duration _iosNotifyEnableDelay = Duration(milliseconds: 200);
+  static const Duration _postHandshakeUnlockDelay = Duration(milliseconds: 300);
   static const Duration _batteryReadTimeout = Duration(seconds: 3);
   static const List<int> _discreteBatteryLevels = [0, 20, 40, 60, 80, 100];
 
@@ -1604,6 +1605,48 @@ class BleService {
     });
   }
 
+  static Future<void> _postHandshakeSettleDelay() async {
+    _logHandshake(
+      'Post-handshake settle (${_postHandshakeUnlockDelay.inMilliseconds}ms) before 05 01 06 unlock',
+    );
+    await Future<void>.delayed(_postHandshakeUnlockDelay);
+    await _iosBleSettle('post-handshake before 05 01 06 unlock');
+  }
+
+  /// Uses an live GATT link when the lock is already connected (Watch-style fast path).
+  static Future<String?> _tryUnlockOnExistingConnection(String deviceId) async {
+    final device = BluetoothDevice.fromId(deviceId);
+    if (!device.isConnected) {
+      return null;
+    }
+
+    try {
+      await device.discoverServices().timeout(const Duration(seconds: 2));
+    } catch (_) {
+      _logUnlock('Existing GATT link stale for $deviceId — will reconnect');
+      return null;
+    }
+
+    _activeDeviceId = deviceId;
+
+    if (_isValidToken(_deviceTokens[deviceId])) {
+      _logUnlock(
+        'Using existing GATT connection and cached token for unlock ($deviceId)',
+      );
+      return _deviceTokens[deviceId];
+    }
+
+    _logUnlock(
+      'Existing GATT connection for $deviceId — running 06 01 handshake only',
+    );
+    final token = await _performSessionHandshake(deviceId);
+    if (token == null) return null;
+
+    _deviceTokens[deviceId] = token;
+    await _postHandshakeSettleDelay();
+    return token;
+  }
+
   /// Strict on-demand session: credentials → disconnect → connect → 06 01 AES handshake.
   static Future<String> _prepareOnDemandUnlockSession(String deviceId) async {
     _deviceUnlockedThisSession.remove(deviceId);
@@ -1652,7 +1695,6 @@ class BleService {
     if (_isValidToken(token)) {
       cacheDeviceEncryptKey(deviceId, _handshakeEncryptKey(deviceId));
       _deviceTokens[deviceId] = token!;
-      await _iosBleSettle('after 06 01 token response before unlock');
       return token;
     }
 
@@ -1777,8 +1819,17 @@ class BleService {
   static Future<bool> connectAndUnLock(String deviceId) {
     return runExclusive(() async {
       try {
-        final sessionToken = await _prepareOnDemandUnlockSession(deviceId);
-        await _iosBleSettle('post-handshake before 05 01 06 unlock');
+        await _loadCredentialsForUnlock(deviceId);
+
+        final existingToken = await _tryUnlockOnExistingConnection(deviceId);
+        final String sessionToken;
+
+        if (existingToken != null && _isValidToken(existingToken)) {
+          sessionToken = existingToken;
+        } else {
+          sessionToken = await _prepareOnDemandUnlockSession(deviceId);
+          await _postHandshakeSettleDelay();
+        }
 
         return await _requestToUnlockCore(
           deviceId,
