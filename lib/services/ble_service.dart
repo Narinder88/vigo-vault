@@ -396,12 +396,38 @@ class BleService {
   }
 
   static Future<void> _releaseOnDemandConnectionInternal(String deviceId) async {
-    _logUnlock('Releasing on-demand GATT connection for $deviceId');
+    await _explicitlyCloseGattConnection(deviceId);
+  }
+
+  /// Fully closes the GATT link after on-demand connect/unlock (ST17H65 pattern).
+  static Future<void> _explicitlyCloseGattConnection(String deviceId) async {
+    _logUnlock('Explicitly closing GATT connection for $deviceId');
     _resetHandshakeState(deviceId);
     if (_activeDeviceId == deviceId) {
       _activeDeviceId = null;
     }
-    await _forceReleaseDevice(deviceId);
+
+    final device = BluetoothDevice.fromId(deviceId);
+    try {
+      if (device.isConnected) {
+        await _disableLockNotification(device);
+        await device.disconnect(
+          queue: false,
+          androidDelay: _androidDisconnectDelayMs,
+        );
+        if (device.isConnected) {
+          await device.connectionState
+              .where((state) => state == BluetoothConnectionState.disconnected)
+              .first
+              .timeout(_disconnectTimeout);
+        }
+      }
+    } catch (error) {
+      _logUnlock('GATT disconnect warning for $deviceId: $error');
+    }
+
+    await _flushGattResources(device);
+    await _waitForGattSettle();
   }
 
   /// Disconnects every active lock when the app backgrounds or resets BLE state.
@@ -1531,75 +1557,69 @@ class BleService {
     });
   }
 
-  static Future<bool> _ensureConnectedForUnlock(String deviceId) async {
-    final device = BluetoothDevice.fromId(deviceId);
+  /// Strict on-demand session: disconnect → connect → 06 01 AES handshake.
+  static Future<String> _prepareOnDemandUnlockSession(String deviceId) async {
+    _deviceUnlockedThisSession.remove(deviceId);
+    _resetHandshakeState(deviceId);
 
-    if (device.isConnected) {
-      try {
-        await device.discoverServices().timeout(const Duration(seconds: 2));
-      } on TimeoutException {
-        _logUnlock('Stale BLE link for $deviceId — reconnecting');
-        await _discardDeviceSession(deviceId);
-        if (!await _connectForUnlockGatt(deviceId)) {
-          return false;
-        }
-      } catch (_) {
-        _logUnlock('Stale BLE link for $deviceId — reconnecting');
-        await _discardDeviceSession(deviceId);
-        if (!await _connectForUnlockGatt(deviceId)) {
-          return false;
-        }
-      }
-    } else {
-      _resetHandshakeState(deviceId);
-      if (!await _connectForUnlockGatt(deviceId)) {
-        return false;
-      }
+    await _ensureFullyDisconnected(deviceId);
+    await _waitBeforeConnect();
+
+    if (!await _connectForUnlockGatt(deviceId)) {
+      throw LockAuthenticationException(
+        deviceId,
+        message: 'Could not establish BLE connection for unlock.',
+      );
     }
 
     final token = await _performSessionHandshake(deviceId);
     if (token == null) {
-      _logUnlock('Session handshake failed for $deviceId');
-      await _safeDisconnect(device);
-      return false;
+      await _safeDisconnect(BluetoothDevice.fromId(deviceId));
+      throw LockAuthenticationException(
+        deviceId,
+        message:
+            'AES session handshake failed. The lock did not return a valid token.',
+      );
     }
 
     _deviceTokens[deviceId] = token;
     _activeDeviceId = deviceId;
-    _logUnlock('Fresh session token acquired for unlock ($deviceId)');
-    return true;
+    _logUnlock('Fresh AES session token acquired for unlock ($deviceId)');
+    return token;
   }
 
-  /// Runs the same 06 01 token handshake used when adding a new lock.
+  /// Same 06 01 challenge-response used when adding a lock (AES master key → session token).
   static Future<String?> _performSessionHandshake(String deviceId) async {
-    _deviceUnlockedThisSession.remove(deviceId);
-    _logHandshake('Performing fresh 06 01 session handshake for $deviceId');
+    _logHandshake(
+      'Performing fresh 06 01 AES challenge-response handshake for $deviceId',
+    );
+    await _cancelHandshakeSubscriptions(deviceId);
 
-    final token = await getToken(
+    final token = await requestToken(
       deviceId,
       ignoreConnect: true,
-      forceFresh: true,
-    ).timeout(_unlockConnectTimeout, onTimeout: () => '');
+    ).timeout(_unlockConnectTimeout, onTimeout: () => null);
 
-    return _isValidToken(token) ? token : null;
+    if (_isValidToken(token)) {
+      cacheDeviceEncryptKey(deviceId, _handshakeEncryptKey(deviceId));
+      _deviceTokens[deviceId] = token!;
+      return token;
+    }
+
+    return null;
   }
 
   /// Fast single-attempt connect + handshake for unlock/toggle flows.
   static Future<bool> connectForUnlock(String deviceId) {
     return runExclusive(() async {
-      if (!await _connectForUnlockGatt(deviceId)) {
+      try {
+        await _prepareOnDemandUnlockSession(deviceId);
+        return true;
+      } on LockAuthenticationException {
+        rethrow;
+      } catch (_) {
         return false;
       }
-
-      final token = await _performSessionHandshake(deviceId);
-      if (token == null) {
-        await _safeDisconnect(BluetoothDevice.fromId(deviceId));
-        return false;
-      }
-
-      _deviceTokens[deviceId] = token;
-      _activeDeviceId = deviceId;
-      return true;
     });
   }
 
@@ -1609,9 +1629,6 @@ class BleService {
 
     try {
       await _stopScanBeforeConnect();
-      if (!device.isConnected) {
-        await _ensureFullyDisconnected(deviceId);
-      }
 
       await device
           .connect(
@@ -1645,6 +1662,7 @@ class BleService {
   static Future<bool> _requestToUnlockCore(
     String deviceId, {
     bool forceFresh = false,
+    String? sessionToken,
     Duration responseTimeout = _unlockWriteTimeout,
   }) async {
     if (forceFresh) {
@@ -1655,8 +1673,8 @@ class BleService {
     cacheDeviceEncryptKey(deviceId, encryptKey);
 
     final String token;
-    if (forceFresh && _isValidToken(_deviceTokens[deviceId])) {
-      token = _deviceTokens[deviceId]!;
+    if (sessionToken != null && _isValidToken(sessionToken)) {
+      token = sessionToken;
     } else if (forceFresh) {
       token = await BleService.getToken(
         deviceId,
@@ -1708,28 +1726,30 @@ class BleService {
   static Future<bool> connectAndUnLock(String deviceId) {
     return runExclusive(() async {
       try {
-        _deviceUnlockedThisSession.remove(deviceId);
-
-        if (!await _ensureConnectedForUnlock(deviceId)) {
-          _logUnlock('Unlock aborted: connect/handshake failed for $deviceId');
-          return false;
-        }
+        final sessionToken = await _prepareOnDemandUnlockSession(deviceId);
 
         return await _requestToUnlockCore(
           deviceId,
           forceFresh: true,
+          sessionToken: sessionToken,
           responseTimeout: _unlockWriteTimeout,
         );
       } on LockAuthenticationException {
         rethrow;
       } on TimeoutException catch (error) {
         _logUnlock('Unlock timed out for $deviceId: $error');
-        return false;
+        throw LockAuthenticationException(
+          deviceId,
+          message: 'Unlock timed out. Move closer to the lock and try again.',
+        );
       } catch (error) {
         _logUnlock('Unlock failed for $deviceId: $error');
-        return false;
+        throw LockAuthenticationException(
+          deviceId,
+          message: 'Unlock failed: $error',
+        );
       } finally {
-        await _releaseOnDemandConnectionInternal(deviceId);
+        await _explicitlyCloseGattConnection(deviceId);
       }
     });
   }
