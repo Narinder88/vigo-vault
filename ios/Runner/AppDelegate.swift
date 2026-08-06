@@ -180,6 +180,28 @@ import WatchConnectivity
         }
         result(storage.hasSecretKey(deviceId: deviceId))
 
+      case "syncLockToWatch":
+        guard let args = call.arguments as? [String: Any],
+              let deviceId = args["deviceId"] as? String,
+              !deviceId.isEmpty else {
+          result(FlutterError(code: "invalid_argument", message: "deviceId is required", details: nil))
+          return
+        }
+        let secretKey = (args["secretKey"] as? String) ?? storage.getSecretKey(deviceId: deviceId) ?? ""
+        if WCSession.isSupported() {
+          let session = WCSession.default
+          let payload: [String: Any] = [
+            "lockId": deviceId,
+            "secretKey": secretKey,
+          ]
+          do {
+            try session.updateApplicationContext(payload)
+          } catch {
+            NSLog("syncLockToWatch: updateApplicationContext failed: \(error.localizedDescription)")
+          }
+        }
+        result(nil)
+
       default:
         result(FlutterMethodNotImplemented)
       }

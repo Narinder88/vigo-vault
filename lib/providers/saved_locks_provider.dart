@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:fitness_snack_lock/models/saved_lock.dart';
 import 'package:fitness_snack_lock/services/pairing_service.dart';
 import 'package:fitness_snack_lock/services/paired_lock_storage.dart';
@@ -313,7 +315,7 @@ class SavedLocksNotifier extends StateNotifier<SavedLocksState> {
       isLoading: state.isLoading,
     );
     if (lockId != null) {
-      await PairedLockStorage.syncLockToWatch(lockId);
+      unawaited(PairedLockStorage.syncLockToWatch(lockId));
     }
   }
 

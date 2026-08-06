@@ -170,17 +170,28 @@ class PairedLockStorage {
     return factoryKey.toLowerCase();
   }
 
-  /// Pushes the lock MAC and secret key to the paired Wear OS app.
+  /// Pushes the lock MAC and secret key to the paired watch app (Wear OS / watchOS).
+  /// Failures are logged only — callers must not be blocked by watch sync issues.
   static Future<void> syncLockToWatch(String deviceId) async {
     if (deviceId.isEmpty || !_useNativeSecureStorage) return;
 
     try {
+      final secretKey = await getSecretKey(deviceId);
       await _channel.invokeMethod<void>(
         'syncLockToWatch',
-        {'deviceId': deviceId},
+        {
+          'deviceId': deviceId,
+          if (secretKey != null && secretKey.isNotEmpty) 'secretKey': secretKey,
+        },
       );
-    } on PlatformException {
-      // Watch may be disconnected or unavailable.
+    } on MissingPluginException catch (error) {
+      debugPrint('syncLockToWatch unavailable (no native handler): $error');
+    } on PlatformException catch (error) {
+      debugPrint(
+        'syncLockToWatch failed (${error.code}): ${error.message ?? error}',
+      );
+    } catch (error) {
+      debugPrint('syncLockToWatch failed: $error');
     }
   }
 
