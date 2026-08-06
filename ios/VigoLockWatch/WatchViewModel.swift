@@ -2,6 +2,8 @@ import SwiftUI
 import WatchConnectivity
 
 class WatchViewModel: NSObject, ObservableObject, WCSessionDelegate {
+    @Published var isSpinning = false
+
     override init() {
         super.init()
         if WCSession.isSupported() {
@@ -11,10 +13,25 @@ class WatchViewModel: NSObject, ObservableObject, WCSessionDelegate {
     }
 
     func sendToggleLock() {
+        guard WCSession.default.isReachable else {
+            print("Watch: iPhone is unreachable")
+            return
+        }
+
+        isSpinning = true
         WCSession.default.sendMessage(
             ["action": "toggleLock"],
-            replyHandler: nil,
-            errorHandler: nil
+            replyHandler: { _ in
+                DispatchQueue.main.async {
+                    self.isSpinning = false
+                }
+            },
+            errorHandler: { error in
+                print("Watch sendMessage error: \(error.localizedDescription)")
+                DispatchQueue.main.async {
+                    self.isSpinning = false
+                }
+            }
         )
     }
 

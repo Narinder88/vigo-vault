@@ -4,6 +4,7 @@ import 'package:fitness_snack_lock/providers/ble_provider.dart';
 import 'package:fitness_snack_lock/providers/saved_locks_provider.dart';
 import 'package:fitness_snack_lock/services/ble_connection_monitor.dart';
 import 'package:fitness_snack_lock/services/ble_service.dart';
+import 'package:fitness_snack_lock/services/pairing_service.dart';
 import 'package:fitness_snack_lock/services/watch_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_easyloading/flutter_easyloading.dart';
@@ -39,6 +40,29 @@ class _RootAppState extends ConsumerState<RootApp> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      WatchService.instance?.onToggleLock = _handleWatchToggleLock;
+    });
+  }
+
+  Future<void> _handleWatchToggleLock() async {
+    final locksState = ref.read(savedLocksProvider);
+    final lockId = locksState.primaryLockId ??
+        locksState.activeLockId ??
+        (locksState.locks.isNotEmpty ? locksState.locks.first.id : null);
+
+    if (lockId == null || lockId.isEmpty) return;
+
+    try {
+      final isUnlocked = await BleService.connectAndUnLock(lockId);
+      if (isUnlocked) {
+        await WatchService.instance?.sendStateToWatch('unlocked');
+      }
+    } on LockAuthenticationException {
+      // Watch cannot show the auth dialog; user must unlock from the phone.
+    } catch (_) {
+      // Ignore transient BLE errors from watch-initiated unlock.
+    }
   }
 
   @override

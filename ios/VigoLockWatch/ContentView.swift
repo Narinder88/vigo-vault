@@ -8,16 +8,24 @@ struct ContentView: View {
             Button(action: {
                 viewModel.sendToggleLock()
             }) {
-                Image(systemName: "lock.fill")
-                    .font(.system(size: 52, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .frame(width: 120, height: 120)
-                    .background(
-                        Circle()
-                            .fill(Color.green.gradient)
-                    )
+                ZStack {
+                    Circle()
+                        .fill(Color.green.gradient)
+                        .frame(width: 120, height: 120)
+
+                    if viewModel.isSpinning {
+                        ProgressView()
+                            .progressViewStyle(.circular)
+                            .tint(.white)
+                    } else {
+                        Image(systemName: "lock.fill")
+                            .font(.system(size: 52, weight: .semibold))
+                            .foregroundStyle(.white)
+                    }
+                }
             }
             .buttonStyle(.plain)
+            .disabled(viewModel.isSpinning)
 
             Text("Tap to toggle lock")
                 .font(.caption2)

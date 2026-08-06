@@ -122,6 +122,14 @@ class LockConnectionHelper {
         );
       }
 
+      bleNotifier.setConnected(
+        device: device,
+        token: token,
+        batteryLevel: readings.batteryLevel,
+        rssi: readings.rssi,
+        customDeviceName: displayName,
+      );
+
       return true;
     } catch (_) {
       if (!background) {
@@ -134,7 +142,9 @@ class LockConnectionHelper {
       }
       BleConnectionMonitor.stopMonitoring();
       if (!background) {
-        bleNotifier.clearSession();
+        if (!sessionEstablished) {
+          bleNotifier.clearSession();
+        }
         if (bleNotifier.value.isConnecting) {
           bleNotifier.endConnecting();
         }

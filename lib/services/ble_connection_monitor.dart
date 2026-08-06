@@ -50,6 +50,9 @@ class BleConnectionMonitor {
 
     stopMonitoring();
     await BleService.resetDeviceConnection(deviceId);
+    if (bleNotifier.value.isConnecting) {
+      bleNotifier.endConnecting();
+    }
     bleNotifier.clearSession();
   }
 }

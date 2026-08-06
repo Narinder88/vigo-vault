@@ -1,11 +1,19 @@
 import 'package:flutter/services.dart';
 
+typedef WatchToggleLockCallback = Future<void> Function();
+
 class WatchService {
   WatchService() {
+    instance = this;
     _channel.setMethodCallHandler(_handleMethodCall);
   }
 
-  static const MethodChannel _channel = MethodChannel('com.singh.vigovault/watch');
+  static WatchService? instance;
+
+  static const MethodChannel _channel =
+      MethodChannel('com.singh.vigovault/watch');
+
+  WatchToggleLockCallback? onToggleLock;
 
   Future<void> _handleMethodCall(MethodCall call) async {
     if (call.method != 'fromWatch') {
@@ -14,8 +22,9 @@ class WatchService {
 
     final arguments = call.arguments;
     if (arguments is Map && arguments['action'] == 'toggleLock') {
-      // ignore: avoid_print
-      print('⌚ Watch requested a vault toggle!');
+      if (onToggleLock != null) {
+        await onToggleLock!();
+      }
     }
   }
 
