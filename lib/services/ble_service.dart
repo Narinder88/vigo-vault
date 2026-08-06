@@ -7,6 +7,10 @@ import 'package:fitness_snack_lock/services/paired_lock_storage.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 
+/// Phone foreground unlock uses the original build-195 BLE write/connect profile.
+/// Watch bridge unlock uses tuned GATT lifecycle, delays, and write parameters.
+enum _BleUnlockProfile { phone, watch }
+
 class BleService {
   static String currentEncryptKey = DataRequestPattern.defaultEncryptKey;
 
@@ -28,6 +32,11 @@ class BleService {
   }
 
   static String? tokenForDevice(String deviceId) => _deviceTokens[deviceId];
+
+  static _BleUnlockProfile _activeUnlockProfile = _BleUnlockProfile.phone;
+
+  static bool get _useWatchBleTuning =>
+      _activeUnlockProfile == _BleUnlockProfile.watch;
 
   static bool requiresClaiming(String deviceId) => false;
 
@@ -572,10 +581,16 @@ class BleService {
       await notifyCharacteristic
           .setNotifyValue(false)
           .timeout(_handshakeTimeout);
-      await Future<void>.delayed(_notifyFlushDelay);
-      await notifyCharacteristic.setNotifyValue(true).timeout(_handshakeTimeout);
-      await Future<void>.delayed(_notifyFlushDelay);
-      await _iosBleSettle('after 36F6 notify enable');
+      if (_useWatchBleTuning) {
+        await Future<void>.delayed(_notifyFlushDelay);
+        await notifyCharacteristic.setNotifyValue(true).timeout(_handshakeTimeout);
+        await Future<void>.delayed(_notifyFlushDelay);
+        await _iosBleSettle('after 36F6 notify enable');
+      } else {
+        await Future<void>.delayed(const Duration(milliseconds: 150));
+        await notifyCharacteristic.setNotifyValue(true).timeout(_handshakeTimeout);
+        await Future<void>.delayed(const Duration(milliseconds: 150));
+      }
     } catch (error) {
       _logHandshake('36F6 notify flush warning: $error');
     }
@@ -710,19 +725,33 @@ class BleService {
       );
     }
 
-    await _iosBleSettle('before 36F5 write${debugLabel != null ? ' ($debugLabel)' : ''}');
+    if (_useWatchBleTuning) {
+      await _iosBleSettle(
+        'before 36F5 write${debugLabel != null ? ' ($debugLabel)' : ''}',
+      );
+    }
 
-    // Match Android WRITE_TYPE_DEFAULT: write-with-response, single 16-byte AES block.
-    await writeCharacteristic
-        .write(
-          encryptedData,
-          withoutResponse: false,
-          allowLongWrite: false,
-          timeout: writeTimeout,
-        )
-        .timeout(Duration(seconds: writeTimeout));
-
-    await _iosBleSettle('after 36F5 write${debugLabel != null ? ' ($debugLabel)' : ''}');
+    if (_useWatchBleTuning) {
+      await writeCharacteristic
+          .write(
+            encryptedData,
+            withoutResponse: false,
+            allowLongWrite: false,
+            timeout: writeTimeout,
+          )
+          .timeout(Duration(seconds: writeTimeout));
+      await _iosBleSettle(
+        'after 36F5 write${debugLabel != null ? ' ($debugLabel)' : ''}',
+      );
+    } else {
+      await writeCharacteristic
+          .write(
+            encryptedData,
+            allowLongWrite: true,
+            timeout: writeTimeout,
+          )
+          .timeout(Duration(seconds: writeTimeout));
+    }
   }
 
   static Future<void> _writeTokenChallenge(
@@ -1167,14 +1196,24 @@ class BleService {
 
     if (ignoreEncryption) {
       final payload = DataService.hexStringToBytesList(data);
-      await writeCharacteristic
-          .write(
-            payload,
-            withoutResponse: false,
-            allowLongWrite: false,
-            timeout: writeTimeout,
-          )
-          .timeout(Duration(seconds: writeTimeout));
+      if (_useWatchBleTuning) {
+        await writeCharacteristic
+            .write(
+              payload,
+              withoutResponse: false,
+              allowLongWrite: false,
+              timeout: writeTimeout,
+            )
+            .timeout(Duration(seconds: writeTimeout));
+      } else {
+        await writeCharacteristic
+            .write(
+              payload,
+              allowLongWrite: true,
+              timeout: writeTimeout,
+            )
+            .timeout(Duration(seconds: writeTimeout));
+      }
       return;
     }
 
@@ -1832,9 +1871,34 @@ class BleService {
     return true;
   }
 
-  /// Single unlock entry point used by the phone UI and Apple Watch bridge.
+  /// Build-195 phone foreground unlock: connect, handshake via [_connectImpl], unlock, release.
+  static Future<bool> connectAndUnLock(String deviceId) {
+    return runExclusive(() async {
+      _activeUnlockProfile = _BleUnlockProfile.phone;
+      try {
+        await _loadCredentialsForUnlock(deviceId);
+        final connected = await _connectImpl(deviceId);
+        if (!connected) return false;
+
+        return await _requestToUnlockCore(
+          deviceId,
+          forceFresh: true,
+        );
+      } on LockAuthenticationException {
+        rethrow;
+      } on PairingRequiredException {
+        rethrow;
+      } finally {
+        _activeUnlockProfile = _BleUnlockProfile.phone;
+        await _releaseOnDemandConnectionInternal(deviceId);
+      }
+    });
+  }
+
+  /// Watch bridge unlock: fast-path GATT reuse, settle delays, tuned iOS writes.
   static Future<bool> unlockLock(String deviceId) {
     return runExclusive(() async {
+      _activeUnlockProfile = _BleUnlockProfile.watch;
       try {
         await _loadCredentialsForUnlock(deviceId);
 
@@ -1877,13 +1941,11 @@ class BleService {
           message: 'Unlock failed: $error',
         );
       } finally {
+        _activeUnlockProfile = _BleUnlockProfile.phone;
         await _explicitlyCloseGattConnection(deviceId);
       }
     });
   }
-
-  /// @deprecated Use [unlockLock]. Kept for call-site compatibility.
-  static Future<bool> connectAndUnLock(String deviceId) => unlockLock(deviceId);
 
   static Future<int> _fetchBatteryLevel(String deviceId, String token) async {
     final device = BluetoothDevice.fromId(deviceId);

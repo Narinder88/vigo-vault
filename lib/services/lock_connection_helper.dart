@@ -148,6 +148,9 @@ class LockConnectionHelper {
       }
       return false;
     } finally {
+      if (sessionEstablished || BleService.isDeviceConnected(deviceId)) {
+        await BleService.releaseOnDemandConnection(deviceId);
+      }
       BleConnectionMonitor.stopMonitoring();
       if (!background) {
         if (!sessionEstablished) {
@@ -160,7 +163,7 @@ class LockConnectionHelper {
     }
   }
 
-  /// Same unlock path used by the phone UI and Apple Watch MethodChannel bridge.
+  /// Apple Watch MethodChannel bridge only — uses tuned GATT unlock path.
   static Future<bool> triggerUnlock(String deviceId) {
     return BleService.unlockLock(deviceId);
   }
@@ -180,7 +183,7 @@ class LockConnectionHelper {
     bool forceFresh = false,
   }) async {
     try {
-      return await triggerUnlock(deviceId);
+      return await BleService.connectAndUnLock(deviceId);
     } on PairingRequiredException {
       return false;
     } on LockAuthenticationException {
