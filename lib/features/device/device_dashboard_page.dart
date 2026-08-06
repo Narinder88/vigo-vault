@@ -81,7 +81,7 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
     final bleNotifier = ref.read(bleProvider.notifier);
 
     try {
-      await LockConnectionHelper.connectAndRestoreSession(
+      final connected = await LockConnectionHelper.connectAndRestoreSession(
         deviceId: lockId,
         bleNotifier: bleNotifier,
         locksNotifier: ref.read(savedLocksProvider.notifier),
@@ -91,12 +91,12 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
         const Duration(seconds: 5),
         onTimeout: () => false,
       );
+      if (connected && mounted) {
+        _resetBusyConnectionState();
+      }
     } finally {
       if (mounted) {
-        setState(() => _connectingLockId = null);
-      }
-      if (bleNotifier.value.isConnecting) {
-        bleNotifier.endConnecting();
+        _resetBusyConnectionState();
       }
     }
   }
@@ -106,9 +106,38 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
     if (bleNotifier.value.isConnecting) {
       bleNotifier.endConnecting();
     }
-    if (_connectingLockId != null) {
+    if (_connectingLockId != null && mounted) {
       setState(() => _connectingLockId = null);
     }
+  }
+
+  bool _hasBleSession(SavedLock lock) {
+    final bleState = ref.read(bleProvider);
+    return bleState.device?.remoteId.str == lock.id &&
+        bleState.token != null &&
+        !bleState.isConnecting;
+  }
+
+  bool _isLockConnected(SavedLock lock) {
+    if (BleService.isDeviceConnected(lock.id)) return true;
+    return _hasBleSession(lock);
+  }
+
+  bool _isCardConnecting(SavedLock lock) {
+    if (_isLockConnected(lock)) return false;
+    return _connectingLockId == lock.id ||
+        ref.read(bleProvider).isConnecting;
+  }
+
+  Future<void> _navigateToLockScreen(SavedLock lock) async {
+    await ref.read(savedLocksProvider.notifier).setActiveLockId(lock.id);
+    if (!mounted) return;
+
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (context) => LockControlPage(lockId: lock.id),
+      ),
+    );
   }
 
   Future<void> _releaseStaleBleSessions() async {
@@ -128,20 +157,35 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
   }
 
   Future<void> _openLock(SavedLock lock) async {
-    final bleState = ref.read(bleProvider);
-    if (_connectingLockId != null || bleState.isConnecting) return;
+    if (_isLockConnected(lock)) {
+      await _navigateToLockScreen(lock);
+      return;
+    }
+
+    if (_isCardConnecting(lock)) return;
 
     setState(() => _connectingLockId = lock.id);
     final bleNotifier = ref.read(bleProvider.notifier);
 
     try {
-      await ref.read(savedLocksProvider.notifier).setActiveLockId(lock.id);
+      final connected = await LockConnectionHelper.connectAndRestoreSession(
+        deviceId: lock.id,
+        bleNotifier: bleNotifier,
+        locksNotifier: ref.read(savedLocksProvider.notifier),
+        notificationManager: ref.read(notificationManagerProvider.notifier),
+      );
 
       if (!mounted) return;
 
-      await Navigator.of(context).push(
-        MaterialPageRoute<void>(
-          builder: (context) => LockControlPage(lockId: lock.id),
+      if (connected || _isLockConnected(lock)) {
+        await _navigateToLockScreen(lock);
+        return;
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Could not connect to the lock. Move closer and try again.'),
+          behavior: SnackBarBehavior.floating,
         ),
       );
     } catch (error) {
@@ -154,15 +198,8 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
         );
       }
     } finally {
-      if (mounted) {
-        setState(() => _connectingLockId = null);
-      }
-      if (bleNotifier.value.isConnecting) {
-        bleNotifier.endConnecting();
-      }
+      _resetBusyConnectionState();
     }
-
-    if (!mounted) return;
   }
 
   Future<void> _addLock() async {
@@ -355,8 +392,6 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
     }
   }
 
-  bool _isLockConnected(SavedLock lock) => BleService.isDeviceConnected(lock.id);
-
   ({int? battery, int? rssi}) _lockTelemetry(SavedLock lock) {
     final bleState = ref.watch(bleProvider);
     if (_isLockConnected(lock)) {
@@ -376,6 +411,11 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
   Widget build(BuildContext context) {
     ref.listen(bleProvider, (previous, next) {
       if (previous?.isConnecting == true && !next.isConnecting) {
+        _resetBusyConnectionState();
+      }
+      if (next.device != null &&
+          next.token != null &&
+          !next.isConnecting) {
         _resetBusyConnectionState();
       }
     });
@@ -450,8 +490,7 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
                       final lock = locks[index];
                       final isConnected = _isLockConnected(lock);
                       final isSearching = false;
-                      final isConnecting = _connectingLockId == lock.id ||
-                          ref.watch(bleProvider).isConnecting;
+                      final isConnecting = _isCardConnecting(lock);
                       final telemetry = _lockTelemetry(lock);
 
                       return Padding(
@@ -607,7 +646,7 @@ class _LockCard extends StatelessWidget {
     return 'Tap to open';
   }
 
-  bool get _isBusy => isConnecting || isSearching;
+  bool get _isBusy => !isConnected && (isConnecting || isSearching);
 
   Widget _buildLockAvatar() {
     const avatarRadius = 26.0;

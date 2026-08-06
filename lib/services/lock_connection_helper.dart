@@ -156,9 +156,9 @@ class LockConnectionHelper {
         if (!sessionEstablished) {
           bleNotifier.clearSession();
         }
-        if (bleNotifier.value.isConnecting) {
-          bleNotifier.endConnecting();
-        }
+      }
+      if (bleNotifier.value.isConnecting) {
+        bleNotifier.endConnecting();
       }
     }
   }
