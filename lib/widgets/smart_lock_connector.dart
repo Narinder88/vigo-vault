@@ -7,11 +7,16 @@ class SmartLockConnector extends ConsumerStatefulWidget {
   const SmartLockConnector({
     super.key,
     this.device,
+    this.fallbackDeviceId,
+    this.fallbackBatteryLevel,
     required this.onConnectedBuilder,
     required this.onDisconnectedBuilder,
   });
 
   final BluetoothDevice? device;
+  /// When set, shows the connected UI for a saved lock even if GATT was released.
+  final String? fallbackDeviceId;
+  final int? fallbackBatteryLevel;
   final Widget Function(BuildContext context, BluetoothDevice device,
       int batteryLevel) onConnectedBuilder;
   final Widget Function(BuildContext context) onDisconnectedBuilder;
@@ -39,8 +44,15 @@ class _SmartLockConnectorState extends ConsumerState<SmartLockConnector> {
 
   @override
   Widget build(BuildContext context) {
-    final device = ref.watch(bleProvider).device;
-    final batteryLevel = ref.watch(bleProvider).batteryLevel;
+    final bleState = ref.watch(bleProvider);
+    final providerDevice = bleState.device;
+    final device = providerDevice ??
+        (widget.fallbackDeviceId != null
+            ? BluetoothDevice.fromId(widget.fallbackDeviceId!)
+            : null);
+    final batteryLevel = providerDevice != null
+        ? bleState.batteryLevel
+        : (widget.fallbackBatteryLevel ?? 0);
 
     if (device != null) {
       return widget.onConnectedBuilder(

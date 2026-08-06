@@ -396,8 +396,13 @@ class _HomePageState extends ConsumerState<HomePage>
   Widget build(BuildContext context) {
     ref.watch(savedLocksProvider);
     final bleState = ref.watch(bleProvider);
+    final lockId = widget.lockDeviceId;
+    final savedLock =
+        lockId != null ? ref.read(savedLocksProvider.notifier).lockById(lockId) : null;
 
     return SmartLockConnector(
+      fallbackDeviceId: lockId,
+      fallbackBatteryLevel: savedLock?.lastBatteryLevel,
       onConnectedBuilder: (context, device, batteryLevel) {
         final displayBattery = batteryLevel > 0 ? batteryLevel : 0;
 
