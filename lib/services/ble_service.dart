@@ -1377,7 +1377,36 @@ class BleService {
 
   /// Dashboard warm-up: autoConnect, long native timeout, no adapter teardown.
   static Future<bool> connectForBackgroundWarmup(String deviceId) {
-    return runExclusive(() => _connectImpl(deviceId, backgroundWarmup: true));
+    return runExclusive(() async {
+      try {
+        if (isDeviceConnected(deviceId)) {
+          _activeDeviceId = deviceId;
+          BleDebugLog.ble(
+            'Background warm-up: authenticated session already live for $deviceId',
+          );
+          return true;
+        }
+
+        await _loadCredentialsForUnlock(deviceId);
+        _resetHandshakeState(deviceId);
+        await _waitForGattSettle();
+
+        return _attemptConnect(
+          deviceId,
+          backgroundWarmup: true,
+          handshakeTimeout: _unlockHandshakeTimeout,
+        );
+      } on LockAuthenticationException catch (error) {
+        BleDebugLog.error('Background warm-up auth failed for $deviceId: $error');
+        return false;
+      } on PairingRequiredException catch (error) {
+        BleDebugLog.error('Background warm-up pairing required for $deviceId: $error');
+        return false;
+      } catch (error) {
+        BleDebugLog.error('Background warm-up exception for $deviceId: $error');
+        return false;
+      }
+    });
   }
 
   static Future<bool> _connectImpl(
@@ -1423,6 +1452,7 @@ class BleService {
   static Future<bool> _attemptConnect(
     String deviceId, {
     bool backgroundWarmup = false,
+    Duration handshakeTimeout = _handshakeTimeout,
   }) async {
     StreamSubscription<BluetoothConnectionState>? connectionSubscription;
     var reachedConnectedState = false;
@@ -1464,18 +1494,17 @@ class BleService {
         return false;
       }
 
-      final token = await getToken(
+      final token = await requestToken(
         deviceId,
         ignoreConnect: true,
-        forceFresh: true,
-      );
+      ).timeout(handshakeTimeout, onTimeout: () => null);
       if (!_isValidToken(token)) {
         _logHandshake('Connect handshake failed — no valid token obtained');
         await _safeDisconnect(device);
         return false;
       }
 
-      _deviceTokens[deviceId] = token;
+      _deviceTokens[deviceId] = token!;
       _activeDeviceId = deviceId;
 
       connected = true;

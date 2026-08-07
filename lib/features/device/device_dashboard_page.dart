@@ -110,11 +110,26 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
   }
 
   Future<void> _attemptPrimaryLockReconnect() async {
+    await _warmUpPrimaryLockInBackground();
+  }
+
+  Future<void> _warmUpPrimaryLockInBackground() async {
     final lockId = await _resolvePrimaryLockId();
     if (lockId == null || lockId.isEmpty || !mounted) return;
 
     if (BleService.isDeviceConnected(lockId)) {
       await _syncProviderFromLiveGatt(lockId);
+      if (mounted) setState(() {});
+      return;
+    }
+
+    if (LockConnectionHelper.hasPendingConnect(lockId)) {
+      BleDebugLog.ble('Background warm-up already in progress for $lockId');
+      setState(() => _connectingLockId = lockId);
+      final connected = await LockConnectionHelper.awaitPendingConnect(lockId);
+      if (connected && mounted) {
+        setState(() {});
+      }
       return;
     }
 
@@ -130,7 +145,7 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
         background: true,
       );
       if (connected && mounted) {
-        _resetBusyConnectionState();
+        setState(() {});
       }
     } finally {
       if (mounted) {
@@ -229,6 +244,12 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
         builder: (context) => LockControlPage(lockId: lock.id),
       ),
     );
+
+    if (!mounted) return;
+    BleDebugLog.ble(
+      'Returned to dashboard from lock screen — starting background warm-up',
+    );
+    await _warmUpPrimaryLockInBackground();
   }
 
   Future<void> _releaseStaleBleSessions() async {
@@ -349,6 +370,7 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
     );
 
     if (!mounted) return;
+    await _warmUpPrimaryLockInBackground();
   }
 
   Future<void> _renameLock(SavedLock lock) async {

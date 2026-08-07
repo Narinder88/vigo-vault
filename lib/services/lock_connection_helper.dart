@@ -146,6 +146,8 @@ class LockConnectionHelper {
         BleDebugLog.error('Session connect failed for $deviceId (timeout or GATT error)');
         if (!background) {
           bleNotifier.markConnectFailed();
+        } else {
+          bleNotifier.endConnecting();
         }
         return false;
       }
@@ -155,6 +157,8 @@ class LockConnectionHelper {
         BleDebugLog.error('Session connect missing token for $deviceId');
         if (!background) {
           bleNotifier.markConnectFailed();
+        } else {
+          bleNotifier.endConnecting();
         }
         return false;
       }
@@ -203,7 +207,7 @@ class LockConnectionHelper {
 
       BleDebugLog.ble(
         'Session connect success for $deviceId '
-        '(gatt=${BleService.isDeviceConnected(deviceId)})',
+        '(gatt=${BleService.isDeviceConnected(deviceId)}, background=$background)',
       );
 
       return true;
@@ -211,6 +215,8 @@ class LockConnectionHelper {
       BleDebugLog.error('Session connect exception for $deviceId: $error');
       if (!background) {
         bleNotifier.markConnectFailed();
+      } else {
+        bleNotifier.endConnecting();
       }
       return false;
     } finally {
@@ -222,6 +228,10 @@ class LockConnectionHelper {
           bleNotifier.clearSession();
         }
         BleConnectionMonitor.stopMonitoring();
+      } else if (background) {
+        BleDebugLog.ble(
+          'Background session established for $deviceId — provider updated',
+        );
       }
       if (bleNotifier.value.isConnecting) {
         bleNotifier.endConnecting();
