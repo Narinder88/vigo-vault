@@ -15,7 +15,6 @@ import 'package:fitness_snack_lock/services/ble_service.dart';
 import 'package:fitness_snack_lock/services/lock_connection_helper.dart';
 import 'package:fitness_snack_lock/services/saved_lock_storage.dart';
 import 'package:fitness_snack_lock/utils/rssi_utils.dart';
-import 'package:fitness_snack_lock/widgets/ble_debug_log_overlay.dart';
 import 'package:fitness_snack_lock/widgets/rename_lock_dialog.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:flutter/material.dart';
@@ -612,59 +611,57 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
           icon: const Icon(PhosphorIconsRegular.plus),
           label: const Text('Add Lock'),
         ),
-        body: BleDebugLogOverlay(
-          child: locksState.isLoading
-              ? const Center(
-                  child: CircularProgressIndicator(color: _accentColor),
-                )
-              : locks.isEmpty
-                  ? _EmptyLocksView(onAddLock: _addLock)
-                  : ReorderableListView.builder(
-                      padding: const EdgeInsets.fromLTRB(16, 8, 16, 120),
-                      itemCount: locks.length,
-                      onReorderItem: _handleLockReorder,
-                      proxyDecorator: (child, index, animation) {
-                        return AnimatedBuilder(
-                          animation: animation,
-                          builder: (context, _) {
-                            final t =
-                                Curves.easeInOut.transform(animation.value);
-                            return Material(
-                              color: Colors.transparent,
-                              elevation: lerpDouble(0, 8, t) ?? 0,
-                              shadowColor: Colors.black54,
-                              borderRadius: BorderRadius.circular(16),
-                              child: child,
-                            );
-                          },
-                        );
-                      },
-                      itemBuilder: (context, index) {
-                        final lock = locks[index];
-                        final isConnected = _isLockConnected(lock, bleState);
-                        final isSearching = false;
-                        final isConnecting = _isCardConnecting(lock, bleState);
-                        final telemetry = _lockTelemetry(lock, bleState);
+        body: locksState.isLoading
+            ? const Center(
+                child: CircularProgressIndicator(color: _accentColor),
+              )
+            : locks.isEmpty
+                ? _EmptyLocksView(onAddLock: _addLock)
+                : ReorderableListView.builder(
+                    padding: const EdgeInsets.fromLTRB(16, 8, 16, 96),
+                    itemCount: locks.length,
+                    onReorderItem: _handleLockReorder,
+                    proxyDecorator: (child, index, animation) {
+                      return AnimatedBuilder(
+                        animation: animation,
+                        builder: (context, _) {
+                          final t =
+                              Curves.easeInOut.transform(animation.value);
+                          return Material(
+                            color: Colors.transparent,
+                            elevation: lerpDouble(0, 8, t) ?? 0,
+                            shadowColor: Colors.black54,
+                            borderRadius: BorderRadius.circular(16),
+                            child: child,
+                          );
+                        },
+                      );
+                    },
+                    itemBuilder: (context, index) {
+                      final lock = locks[index];
+                      final isConnected = _isLockConnected(lock, bleState);
+                      final isSearching = false;
+                      final isConnecting = _isCardConnecting(lock, bleState);
+                      final telemetry = _lockTelemetry(lock, bleState);
 
-                        return Padding(
-                          key: ValueKey(lock.id),
-                          padding: EdgeInsets.only(
-                            bottom: index < locks.length - 1 ? 12 : 0,
-                          ),
-                          child: _LockCard(
-                            lock: lock,
-                            isConnected: isConnected,
-                            isSearching: isSearching,
-                            isConnecting: isConnecting,
-                            batteryLevel: telemetry.battery,
-                            rssi: telemetry.rssi,
-                            onTap: () => _openLock(lock),
-                            onMenuTap: () => _showLockMenu(lock),
-                          ),
-                        );
-                      },
-                    ),
-        ),
+                      return Padding(
+                        key: ValueKey(lock.id),
+                        padding: EdgeInsets.only(
+                          bottom: index < locks.length - 1 ? 12 : 0,
+                        ),
+                        child: _LockCard(
+                          lock: lock,
+                          isConnected: isConnected,
+                          isSearching: isSearching,
+                          isConnecting: isConnecting,
+                          batteryLevel: telemetry.battery,
+                          rssi: telemetry.rssi,
+                          onTap: () => _openLock(lock),
+                          onMenuTap: () => _showLockMenu(lock),
+                        ),
+                      );
+                    },
+                  ),
       ),
     );
   }
