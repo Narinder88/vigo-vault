@@ -13,6 +13,17 @@ if (keystorePropertiesFile.exists()) {
     keystoreProperties.load(FileInputStream(keystorePropertiesFile))
 }
 
+val localProperties = Properties()
+val localPropertiesFile = rootProject.file("local.properties")
+if (localPropertiesFile.exists()) {
+    localProperties.load(FileInputStream(localPropertiesFile))
+}
+
+val flutterVersionCode =
+    localProperties.getProperty("flutter.versionCode")?.toInt() ?: 222
+val flutterVersionName =
+    localProperties.getProperty("flutter.versionName") ?: "1.2.14"
+
 android {
     namespace = "com.singh.fitnessssnacklock.wear"
     compileSdk = 36
@@ -21,8 +32,8 @@ android {
         applicationId = "com.singh.fitnessssnacklock"
         minSdk = 30
         targetSdk = 36
-        versionCode = 198
-        versionName = "1.0.1"
+        versionCode = flutterVersionCode
+        versionName = flutterVersionName
     }
 
     signingConfigs {
