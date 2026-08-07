@@ -56,10 +56,13 @@ class _HomePageState extends ConsumerState<HomePage>
   late AnimationController _pulseController;
   late AnimationController _spinController;
   late Animation<double> _pulseAnimation;
+  late final BleProvider _bleNotifier;
+  bool _bleSessionReleased = false;
 
   @override
   void initState() {
     super.initState();
+    _bleNotifier = ref.read(bleProvider.notifier);
     _pulseController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 900),
@@ -107,21 +110,28 @@ class _HomePageState extends ConsumerState<HomePage>
   }
 
   Future<void> _releaseLockBleSession() async {
-    final lockId = widget.lockDeviceId ??
-        ref.read(bleProvider).device?.remoteId.str;
+    if (_bleSessionReleased) return;
+
+    final lockId =
+        widget.lockDeviceId ?? _bleNotifier.value.device?.remoteId.str;
     if (lockId == null || lockId.isEmpty) return;
+
+    _bleSessionReleased = true;
+    final shouldMarkDisconnected =
+        _bleNotifier.value.device?.remoteId.str == lockId;
 
     BleConnectionMonitor.stopMonitoring();
     await BleService.releaseOnDemandConnection(lockId);
 
-    final bleState = ref.read(bleProvider);
-    if (bleState.device?.remoteId.str == lockId) {
-      ref.read(bleProvider.notifier).markDisconnected();
+    if (shouldMarkDisconnected) {
+      _bleNotifier.markDisconnected();
     }
   }
 
   Future<void> _handleBackToDashboard() async {
+    if (!mounted) return;
     await _releaseLockBleSession();
+    if (!mounted) return;
     widget.onBackToDashboard?.call();
   }
 
