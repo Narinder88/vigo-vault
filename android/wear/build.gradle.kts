@@ -13,16 +13,33 @@ if (keystorePropertiesFile.exists()) {
     keystoreProperties.load(FileInputStream(keystorePropertiesFile))
 }
 
+// Sync version with pubspec.yaml (source of truth) and Flutter local.properties.
 val localProperties = Properties()
 val localPropertiesFile = rootProject.file("local.properties")
 if (localPropertiesFile.exists()) {
-    localProperties.load(FileInputStream(localPropertiesFile))
+    localPropertiesFile.reader(Charsets.UTF_8).use { reader ->
+        localProperties.load(reader)
+    }
 }
 
-val flutterVersionCode =
-    localProperties.getProperty("flutter.versionCode")?.toInt() ?: 222
-val flutterVersionName =
-    localProperties.getProperty("flutter.versionName") ?: "1.2.14"
+fun readFlutterVersionFromPubspec(): Pair<Int, String> {
+    val pubspecFile = rootProject.file("../pubspec.yaml")
+    if (!pubspecFile.exists()) {
+        throw GradleException("pubspec.yaml not found at ${pubspecFile.absolutePath}")
+    }
+    val versionLine = pubspecFile.readLines()
+        .firstOrNull { it.trimStart().startsWith("version:") }
+        ?: throw GradleException("version: entry not found in pubspec.yaml")
+    val versionSpec = versionLine.substringAfter("version:").trim().removeSurrounding("\"")
+    val versionName = versionSpec.substringBefore("+")
+    val versionCode = versionSpec.substringAfter("+", missingDelimiterValue = "1").toInt()
+    return versionCode to versionName
+}
+
+val pubspecVersion = readFlutterVersionFromPubspec()
+// pubspec.yaml is the source of truth so Wear always matches the Flutter app.
+val flutterVersionCode = pubspecVersion.first
+val flutterVersionName = pubspecVersion.second
 
 android {
     namespace = "com.singh.fitnessssnacklock.wear"
