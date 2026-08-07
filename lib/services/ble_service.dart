@@ -391,7 +391,10 @@ class BleService {
     await releaseOnDemandConnection(deviceId);
   }
 
-  /// Forcefully tears down any non-idle GATT state before a new unlock attempt.
+  /// Forcefully tears down non-idle GATT state before a new unlock attempt.
+  ///
+  /// Skips reset when [deviceId] already has a live authenticated session
+  /// (gatt + valid token) so repeat taps can fast-path the unlock write.
   static Future<void> forceCleanDisconnectBeforeUnlock(String deviceId) async {
     if (deviceId.isEmpty) return;
 
@@ -401,6 +404,14 @@ class BleService {
 
     if (!gattConnected && !authConnected) {
       BleDebugLog.ble('Pre-unlock: $deviceId cleanly disconnected');
+      return;
+    }
+
+    if (gattConnected && authConnected) {
+      BleDebugLog.ble(
+        'Pre-unlock fast-path for $deviceId '
+        '(gatt=$gattConnected auth=$authConnected) — keeping session',
+      );
       return;
     }
 

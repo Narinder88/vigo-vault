@@ -245,9 +245,7 @@ class LockConnectionHelper {
     if (awaitedConnect) {
       BleDebugLog.tap('Pending connect finished for $deviceId — using live session');
     }
-    if (!BleService.isDeviceConnected(deviceId)) {
-      await BleService.forceCleanDisconnectBeforeUnlock(deviceId);
-    }
+    await BleService.forceCleanDisconnectBeforeUnlock(deviceId);
     return BleService.unlockLock(deviceId);
   }
 
