@@ -588,7 +588,8 @@ class BleService {
   static const Duration _streamResponseTimeout = Duration(seconds: 2);
   static const Duration _handshakeTimeout = Duration(seconds: 3);
   static const Duration _handshakeNotifyTimeout = Duration(seconds: 3);
-  static const Duration _unlockConnectTimeout = Duration(seconds: 5);
+  static const Duration _unlockGattConnectTimeout = Duration(seconds: 12);
+  static const Duration _unlockHandshakeTimeout = Duration(seconds: 5);
   static const Duration _unlockWriteTimeout = Duration(seconds: 5);
   static const Duration _iosBleSettleDelay = Duration(milliseconds: 150);
   static const Duration _iosNotifyEnableDelay = Duration(milliseconds: 200);
@@ -1843,7 +1844,7 @@ class BleService {
     final token = await requestToken(
       deviceId,
       ignoreConnect: true,
-    ).timeout(_unlockConnectTimeout, onTimeout: () => null);
+    ).timeout(_unlockHandshakeTimeout, onTimeout: () => null);
 
     if (_isValidToken(token)) {
       cacheDeviceEncryptKey(deviceId, _handshakeEncryptKey(deviceId));
@@ -1869,7 +1870,10 @@ class BleService {
   }
 
   static Future<bool> _connectForUnlockGatt(String deviceId) async {
-    _logUnlock('Connecting for unlock: $deviceId (${_unlockConnectTimeout.inSeconds}s timeout)');
+    _logUnlock(
+      'Connecting for unlock: $deviceId '
+      '(${_unlockGattConnectTimeout.inSeconds}s GATT timeout)',
+    );
     final device = BluetoothDevice.fromId(deviceId);
 
     try {
@@ -1877,21 +1881,24 @@ class BleService {
 
       await device
           .connect(
-            timeout: _unlockConnectTimeout,
+            timeout: _unlockGattConnectTimeout,
             license: License.free,
             autoConnect: false,
           )
-          .timeout(_unlockConnectTimeout);
+          .timeout(_unlockGattConnectTimeout);
 
       if (!device.isConnected) {
         _logUnlock('Connect for unlock failed: device not connected');
         return false;
       }
 
-      await device.discoverServices().timeout(_unlockConnectTimeout);
+      await device.discoverServices().timeout(_unlockGattConnectTimeout);
       await _iosBleSettle('after service discovery');
 
-      _logUnlock('GATT link ready for unlock handshake ($deviceId)');
+      _logUnlock(
+        'GATT link ready for unlock handshake ($deviceId) — '
+        '${_unlockHandshakeTimeout.inSeconds}s handshake timer starts now',
+      );
       return true;
     } on TimeoutException catch (error) {
       _logUnlock('Connect for unlock timed out for $deviceId: $error');

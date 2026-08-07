@@ -11,7 +11,13 @@ import 'package:fitness_snack_lock/services/saved_lock_storage.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 
 class LockConnectionHelper {
-  static const Duration _interactiveConnectTimeout = Duration(seconds: 5);
+  /// GATT connect + discovery budget for foreground tap-to-open.
+  static const Duration _interactiveConnectTimeout = Duration(seconds: 12);
+  /// AES handshake budget — starts only after GATT is ready.
+  static const Duration _interactiveHandshakeTimeout = Duration(seconds: 5);
+  /// Outer cap for the full foreground session (GATT + handshake).
+  static Duration get _interactiveSessionTimeout =>
+      _interactiveConnectTimeout + _interactiveHandshakeTimeout;
 
   static final Map<String, Future<bool>> _pendingConnectByDeviceId = {};
 
@@ -124,11 +130,13 @@ class LockConnectionHelper {
         connected = await connectFuture;
       } else {
         connected = await connectFuture.timeout(
-          _interactiveConnectTimeout,
+          _interactiveSessionTimeout,
           onTimeout: () {
             BleDebugLog.error(
               'Session connect timed out after '
-              '${_interactiveConnectTimeout.inSeconds}s for $deviceId',
+              '${_interactiveSessionTimeout.inSeconds}s for $deviceId '
+              '(GATT ${_interactiveConnectTimeout.inSeconds}s + '
+              'handshake ${_interactiveHandshakeTimeout.inSeconds}s)',
             );
             return false;
           },
