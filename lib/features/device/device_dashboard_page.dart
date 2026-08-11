@@ -46,6 +46,7 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
   String? _connectingLockId;
   final Set<String> _unlockReadyLockIds = {};
   final Set<String> _sessionLockIds = {};
+  final Map<String, int> _sessionGenerationByLockId = {};
   final Map<String, String> _debugStateTracker = {};
 
   @override
@@ -132,7 +133,7 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
 
     if (LockConnectionHelper.hasPendingConnect(lockId)) {
       BleDebugLog.ble('Background warm-up already in progress for $lockId');
-      _beginLockSession(lockId);
+      final sessionGen = _beginLockSession(lockId, caller: 'warmUp pending');
       final connected = await LockConnectionHelper.awaitPendingConnect(lockId);
       if (connected && mounted) {
         _markLockUnlockReady(lockId);
@@ -140,11 +141,14 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
       _endLockSession(
         lockId,
         success: connected || _unlockReadyLockIds.contains(lockId),
+        sessionGeneration: sessionGen,
+        caller: 'warmUp pending done',
+        failureReason: connected ? null : 'awaitPendingConnect=false',
       );
       return;
     }
 
-    _beginLockSession(lockId);
+    final sessionGen = _beginLockSession(lockId, caller: 'warmUp connect');
     final bleNotifier = ref.read(bleProvider.notifier);
     var connected = false;
 
@@ -164,6 +168,9 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
         _endLockSession(
           lockId,
           success: connected || _unlockReadyLockIds.contains(lockId),
+          sessionGeneration: sessionGen,
+          caller: 'warmUp connect finally',
+          failureReason: connected ? null : 'background connect=false',
         );
         if (!_hasInFlightConnectionAttempt()) {
           _resetBusyConnectionState();
@@ -172,25 +179,86 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
     }
   }
 
-  void _beginLockSession(String lockId) {
+  int _beginLockSession(String lockId, {String? caller}) {
+    final generation = (_sessionGenerationByLockId[lockId] ?? 0) + 1;
+    _sessionGenerationByLockId[lockId] = generation;
     if (!mounted) {
       _sessionLockIds.add(lockId);
       _connectingLockId = lockId;
-      _setDebugStateTracker(lockId, '_beginLockSession(unmounted)');
-      return;
+      _setDebugStateTracker(
+        lockId,
+        '_beginLockSession gen=$generation caller=${caller ?? "unknown"}',
+      );
+      return generation;
     }
     setState(() {
       _sessionLockIds.add(lockId);
       _connectingLockId = lockId;
     });
-    _setDebugStateTracker(lockId, '_beginLockSession');
+    _setDebugStateTracker(
+      lockId,
+      '_beginLockSession gen=$generation caller=${caller ?? "unknown"}',
+    );
+    return generation;
   }
 
-  void _endLockSession(String lockId, {required bool success}) {
-    _sessionLockIds.remove(lockId);
+  void _endLockSession(
+    String lockId, {
+    required bool success,
+    required int sessionGeneration,
+    String? caller,
+    Object? failureReason,
+  }) {
+    final currentGeneration = _sessionGenerationByLockId[lockId];
+    if (currentGeneration != sessionGeneration) {
+      _setDebugStateTracker(
+        lockId,
+        '_endLockSession IGNORED stale gen=$sessionGeneration '
+        'current=$currentGeneration caller=${caller ?? "?"} '
+        'success=$success reason=${failureReason ?? "none"}',
+      );
+      return;
+    }
+
     if (!success) {
+      final ble = ref.read(bleProvider.notifier).value;
+      final bleStillConnecting = ble.isConnecting &&
+          (ble.connectingDeviceId == lockId ||
+              ble.device?.remoteId.str == lockId);
+      if (LockConnectionHelper.hasPendingConnect(lockId) ||
+          bleStillConnecting) {
+        _setDebugStateTracker(
+          lockId,
+          '_endLockSession BLOCKED fail — BLE still connecting '
+          'caller=${caller ?? "?"} reason=${failureReason ?? "none"}',
+        );
+        return;
+      }
+
+      if (LockConnectionHelper.isValidToken(
+        BleService.tokenForDevice(lockId),
+      )) {
+        _markLockUnlockReady(lockId);
+        _sessionLockIds.remove(lockId);
+        if (_connectingLockId == lockId) {
+          if (mounted) {
+            setState(() => _connectingLockId = null);
+          } else {
+            _connectingLockId = null;
+          }
+        }
+        _setDebugStateTracker(
+          lockId,
+          '_endLockSession promoted token despite fail '
+          'caller=${caller ?? "?"} reason=${failureReason ?? "none"}',
+        );
+        return;
+      }
+
       _clearLockUnlockReady(lockId);
     }
+
+    _sessionLockIds.remove(lockId);
     if (_connectingLockId == lockId) {
       if (mounted) {
         setState(() => _connectingLockId = null);
@@ -200,7 +268,8 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
     }
     _setDebugStateTracker(
       lockId,
-      '_endLockSession(success=$success)',
+      '_endLockSession(success=$success gen=$sessionGeneration '
+      'caller=${caller ?? "?"} reason=${failureReason ?? "none"})',
     );
   }
 
@@ -488,7 +557,7 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
   }
 
   Future<void> _openLock(SavedLock lock) async {
-    _beginLockSession(lock.id);
+    final sessionGen = _beginLockSession(lock.id, caller: '_openLock tap');
     final bleState = ref.read(bleProvider);
     _setDebugStateTracker(lock.id, '_openLock(tap)', lock: lock, bleState: bleState);
     print(
@@ -518,7 +587,12 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
           _markLockUnlockReady(lock.id);
           BleDebugLog.tap('In-flight connect succeeded — opening lock screen');
           await _navigateToLockScreen(lock);
-          _endLockSession(lock.id, success: true);
+          _endLockSession(
+            lock.id,
+            success: true,
+            sessionGeneration: sessionGen,
+            caller: '_openLock pending success',
+          );
           return;
         }
         print('[LockCard] in-flight connect finished but lock not connected');
@@ -529,7 +603,12 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
         _markLockUnlockReady(lock.id);
         BleDebugLog.tap('Already connected — opening lock screen');
         await _navigateToLockScreen(lock);
-        _endLockSession(lock.id, success: true);
+        _endLockSession(
+          lock.id,
+          success: true,
+          sessionGeneration: sessionGen,
+          caller: '_openLock already connected',
+        );
         return;
       }
 
@@ -582,12 +661,32 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
         print('[LockCard] connect succeeded — navigating');
         BleDebugLog.tap('Connect succeeded — opening lock screen');
         await _navigateToLockScreen(lock);
-        _endLockSession(lock.id, success: true);
+        _endLockSession(
+          lock.id,
+          success: true,
+          sessionGeneration: sessionGen,
+          caller: '_openLock connect success',
+        );
+        return;
+      }
+
+      if (LockConnectionHelper.hasPendingConnect(lock.id)) {
+        _setDebugStateTracker(
+          lock.id,
+          '_openLock kept session after connect=false (pending connect)',
+          lock: lock,
+        );
         return;
       }
 
       print('[LockCard] connect failed for ${lock.id}');
-      _endLockSession(lock.id, success: false);
+      _endLockSession(
+        lock.id,
+        success: false,
+        sessionGeneration: sessionGen,
+        caller: '_openLock connect failed',
+        failureReason: 'connectAndRestoreSession=false',
+      );
       BleDebugLog.error('Tap to Open connect failed for ${lock.id}');
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -601,7 +700,32 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
       print('[LockCard] EXCEPTION in _openLock: $e');
       print('[LockCard] stackTrace: $stackTrace');
       BleDebugLog.error('Tap to Open exception: $e');
-      _endLockSession(lock.id, success: false);
+      if (LockConnectionHelper.hasPendingConnect(lock.id)) {
+        _setDebugStateTracker(
+          lock.id,
+          '_openLock catch kept session (pending): ${e.runtimeType}: $e',
+          lock: lock,
+        );
+        return;
+      }
+      final ble = ref.read(bleProvider.notifier).value;
+      if (ble.isConnecting &&
+          (ble.connectingDeviceId == lock.id ||
+              ble.device?.remoteId.str == lock.id)) {
+        _setDebugStateTracker(
+          lock.id,
+          '_openLock catch kept session (connecting): ${e.runtimeType}: $e',
+          lock: lock,
+        );
+        return;
+      }
+      _endLockSession(
+        lock.id,
+        success: false,
+        sessionGeneration: sessionGen,
+        caller: '_openLock catch',
+        failureReason: '${e.runtimeType}: $e',
+      );
       await _showOnScreenError(e, stackTrace);
     } finally {
       print('[LockCard] _openLock finally — syncing busy connection state');
@@ -710,6 +834,7 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
     await ref.read(savedLocksProvider.notifier).removeLock(lock.id);
     _clearLockUnlockReady(lock.id);
     _sessionLockIds.remove(lock.id);
+    _sessionGenerationByLockId.remove(lock.id);
   }
 
   Future<void> _reconnectPrimaryInBackground() async {
