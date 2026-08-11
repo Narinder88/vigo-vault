@@ -21,7 +21,7 @@ class BleService {
   static final Map<String, bool> _deviceUnlockedThisSession = {};
   static final Map<String, StreamSubscription<List<int>>?>
       _handshakeNotifySubscriptions = {};
-  static final Map<String, int> _lastStandardBatteryByDeviceId = {};
+  static final Map<String, int> _lastFreshBatteryByDeviceId = {};
 
   static const int _maxHandshakeAttempts = 3;
 
@@ -35,9 +35,17 @@ class BleService {
 
   static String? tokenForDevice(String deviceId) => _deviceTokens[deviceId];
 
-  /// Most recent standard GATT (180F/2A19) battery read for [deviceId], if any.
+  /// Most recent live battery read for [deviceId] (GATT on Android, custom on iOS).
+  static int? lastFreshBatteryLevel(String deviceId) =>
+      _lastFreshBatteryByDeviceId[deviceId];
+
+  /// @deprecated Use [lastFreshBatteryLevel].
   static int? lastStandardBatteryLevel(String deviceId) =>
-      _lastStandardBatteryByDeviceId[deviceId];
+      lastFreshBatteryLevel(deviceId);
+
+  static void _cacheFreshBatteryLevel(String deviceId, int level) {
+    _lastFreshBatteryByDeviceId[deviceId] = level;
+  }
 
   static bool hasAuthenticatedToken(String deviceId) =>
       _isValidToken(_deviceTokens[deviceId]);
@@ -264,10 +272,12 @@ class BleService {
       try {
         final services =
             await device.discoverServices().timeout(connectTimeout);
-        await _readAndCacheStandardBatteryLevel(
-          deviceId,
-          services: services,
-        );
+        if (!_isIosBle) {
+          await _readAndCacheStandardBatteryLevel(
+            deviceId,
+            services: services,
+          );
+        }
       } on TimeoutException {
         await _safeDisconnect(device);
         rethrow;
@@ -1199,6 +1209,8 @@ class BleService {
     String deviceId, {
     List<BluetoothService>? services,
   }) async {
+    if (_isIosBle) return null;
+
     final device = BluetoothDevice.fromId(deviceId);
     if (!device.isConnected) return null;
 
@@ -1218,14 +1230,54 @@ class BleService {
 
     final level = await _readStandardBatteryLevelFromServices(resolvedServices);
     if (level != null) {
-      _lastStandardBatteryByDeviceId[deviceId] = level;
+      _cacheFreshBatteryLevel(deviceId, level);
     }
     return level;
   }
 
-  /// Explicit GATT read of Battery Level (180F/2A19) on a live connection.
+  /// Android-only explicit GATT read of Battery Level (180F/2A19).
   static Future<int?> readStandardBatteryLevel(String deviceId) =>
       _readAndCacheStandardBatteryLevel(deviceId);
+
+  /// Platform-aware live battery read: GATT 2A19 on Android, custom lock protocol on iOS.
+  static Future<int?> readFreshBatteryLevel(
+    String deviceId, {
+    String? token,
+    List<BluetoothService>? services,
+  }) async {
+    if (_isIosBle) {
+      final activeToken = token ?? _deviceTokens[deviceId];
+      if (!_isValidToken(activeToken)) return null;
+
+      final level = await _readCustomBatteryLevel(deviceId, activeToken!);
+      if (level != null) {
+        _cacheFreshBatteryLevel(deviceId, level);
+        _logHandshake(
+          'iOS custom lock-protocol battery read: $level% '
+          '(bypassing cached 2A19 GATT)',
+        );
+      }
+      return level;
+    }
+
+    final gattLevel = await _readAndCacheStandardBatteryLevel(
+      deviceId,
+      services: services,
+    );
+    if (gattLevel != null) {
+      return gattLevel;
+    }
+
+    final activeToken = token ?? _deviceTokens[deviceId];
+    if (!_isValidToken(activeToken)) return null;
+
+    final customLevel = await _readCustomBatteryLevel(deviceId, activeToken!);
+    if (customLevel != null) {
+      _cacheFreshBatteryLevel(deviceId, customLevel);
+      _logHandshake('Android custom battery fallback: $customLevel%');
+    }
+    return customLevel;
+  }
 
   static int? _parseBatteryFromLockResponse(
     List<int> response,
@@ -1432,7 +1484,10 @@ class BleService {
       try {
         if (isDeviceConnected(deviceId)) {
           _activeDeviceId = deviceId;
-          await readStandardBatteryLevel(deviceId);
+          await readFreshBatteryLevel(
+            deviceId,
+            token: _deviceTokens[deviceId],
+          );
           BleDebugLog.ble(
             'Background warm-up: authenticated session already live for $deviceId',
           );
@@ -1471,7 +1526,10 @@ class BleService {
       final linkAlive = await verifyConnection(deviceId);
       if (linkAlive) {
         _activeDeviceId = deviceId;
-        await readStandardBatteryLevel(deviceId);
+        await readFreshBatteryLevel(
+          deviceId,
+          token: _deviceTokens[deviceId],
+        );
         print('DEBUG: connect completed successfully');
         return true;
       }
@@ -1890,7 +1948,10 @@ class BleService {
   static Future<String> _prepareOnDemandUnlockSession(String deviceId) async {
     if (isDeviceConnected(deviceId)) {
       _activeDeviceId = deviceId;
-      await readStandardBatteryLevel(deviceId);
+      await readFreshBatteryLevel(
+        deviceId,
+        token: _deviceTokens[deviceId],
+      );
       _logUnlock(
         'Skipping reconnect — authenticated session already active for $deviceId',
       );
@@ -1987,7 +2048,9 @@ class BleService {
       }
 
       await device.discoverServices().timeout(_unlockGattConnectTimeout);
-      await _readAndCacheStandardBatteryLevel(deviceId);
+      if (!_isIosBle) {
+        await _readAndCacheStandardBatteryLevel(deviceId);
+      }
       await _iosBleSettle('after service discovery');
 
       _logUnlock(
@@ -2068,7 +2131,10 @@ class BleService {
 
     _logUnlock('Unlock succeeded for $deviceId (ack frame 05 02 01 00)');
     _deviceUnlockedThisSession[deviceId] = true;
-    final postUnlockBattery = await readStandardBatteryLevel(deviceId);
+    final postUnlockBattery = await readFreshBatteryLevel(
+      deviceId,
+      token: _deviceTokens[deviceId],
+    );
     if (postUnlockBattery != null) {
       _logUnlock('Post-unlock battery read: $postUnlockBattery%');
     }
@@ -2153,36 +2219,20 @@ class BleService {
   }
 
   static Future<int> _fetchBatteryLevel(String deviceId, String token) async {
-    int? gattBatteryLevel;
     try {
-      gattBatteryLevel = await readStandardBatteryLevel(deviceId).timeout(
+      final level = await readFreshBatteryLevel(
+        deviceId,
+        token: token,
+      ).timeout(
         _batteryReadTimeout,
         onTimeout: () => null,
       );
+      return level ?? -1;
     } on TimeoutException {
-      gattBatteryLevel = null;
+      return -1;
     } catch (_) {
-      gattBatteryLevel = null;
+      return -1;
     }
-
-    if (gattBatteryLevel != null) {
-      return gattBatteryLevel;
-    }
-
-    int? customBatteryLevel;
-    try {
-      customBatteryLevel = await _readCustomBatteryLevel(deviceId, token)
-          .timeout(
-        _batteryReadTimeout,
-        onTimeout: () => null,
-      );
-    } on TimeoutException {
-      customBatteryLevel = null;
-    } catch (_) {
-      customBatteryLevel = null;
-    }
-
-    return customBatteryLevel ?? -1;
   }
 
   static Future<int> getBatteryLevel(

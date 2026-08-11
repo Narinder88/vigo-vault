@@ -40,16 +40,10 @@ class LockConnectionHelper {
     required String deviceId,
     required String token,
   }) async {
-    var batteryLevel = await BleService.readStandardBatteryLevel(deviceId);
-
-    if (batteryLevel == null) {
-      final fallback = await BleService.getBatteryLevel(
-        deviceId,
-        ignoreConnect: true,
-        token: token,
-      );
-      batteryLevel = fallback >= 0 ? fallback : null;
-    }
+    final batteryLevel = await BleService.readFreshBatteryLevel(
+      deviceId,
+      token: token,
+    );
 
     var rssi = -100;
     try {
@@ -68,7 +62,7 @@ class LockConnectionHelper {
     SavedLocksNotifier? locksNotifier,
     NotificationManagerProvider? notificationManager,
   }) async {
-    final batteryLevel = BleService.lastStandardBatteryLevel(deviceId);
+    final batteryLevel = BleService.lastFreshBatteryLevel(deviceId);
     if (batteryLevel == null) return;
 
     bleNotifier.setBatteryLevel(batteryLevel);
