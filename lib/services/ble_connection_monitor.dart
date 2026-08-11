@@ -49,7 +49,31 @@ class BleConnectionMonitor {
     if (_monitoredDeviceId != deviceId) return;
 
     stopMonitoring();
+
+    // Padlock hardware often drops GATT immediately after unlock to save battery.
+    if (BleService.wasUnlockedThisSession(deviceId)) {
+      BleService.acknowledgeUnlockDisconnect(deviceId);
+      if (bleNotifier.value.isConnecting) {
+        bleNotifier.endConnecting();
+      }
+      return;
+    }
+
+    // On-demand connect/handshake may release GATT while the session token remains valid.
+    if (BleService.hasAuthenticatedToken(deviceId)) {
+      if (bleNotifier.value.isConnecting) {
+        bleNotifier.endConnecting();
+      }
+      if (bleNotifier.value.device?.remoteId.str == deviceId) {
+        bleNotifier.markDisconnected();
+      }
+      return;
+    }
+
     await BleService.resetDeviceConnection(deviceId);
+    if (bleNotifier.value.isConnecting) {
+      bleNotifier.endConnecting();
+    }
     bleNotifier.clearSession();
   }
 }

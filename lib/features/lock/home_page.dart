@@ -4,6 +4,7 @@ import 'package:fitness_snack_lock/constants/app_branding.dart';
 import 'package:fitness_snack_lock/features/device/device_scanning_page/device_scanning_page.dart';
 import 'package:fitness_snack_lock/providers/ble_provider.dart';
 import 'package:fitness_snack_lock/providers/in_app_review_provider.dart';
+import 'package:fitness_snack_lock/providers/lock_unlock_event_provider.dart';
 import 'package:fitness_snack_lock/providers/notification_manager_provider.dart';
 import 'package:fitness_snack_lock/providers/saved_locks_provider.dart';
 import 'package:fitness_snack_lock/widgets/smart_lock_connector.dart';
@@ -13,6 +14,7 @@ import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:phosphoricons_flutter/phosphoricons_flutter.dart';
 
+import '../../services/ble_connection_monitor.dart';
 import '../../services/ble_service.dart';
 import '../../services/lock_connection_helper.dart';
 import '../../services/pairing_service.dart';
@@ -53,10 +55,15 @@ class _HomePageState extends ConsumerState<HomePage>
   late AnimationController _pulseController;
   late AnimationController _spinController;
   late Animation<double> _pulseAnimation;
+  late final BleProvider _bleNotifier;
+  bool _bleSessionReleased = false;
+
+  static const _postUnlockSuccessDelay = Duration(seconds: 2);
 
   @override
   void initState() {
     super.initState();
+    _bleNotifier = ref.read(bleProvider.notifier);
     _pulseController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 900),
@@ -97,9 +104,53 @@ class _HomePageState extends ConsumerState<HomePage>
 
   @override
   void dispose() {
+    unawaited(_releaseLockBleSession());
     _pulseController.dispose();
     _spinController.dispose();
     super.dispose();
+  }
+
+  Future<void> _releaseLockBleSession() async {
+    if (_bleSessionReleased) return;
+
+    final lockId =
+        widget.lockDeviceId ?? _bleNotifier.value.device?.remoteId.str;
+    if (lockId == null || lockId.isEmpty) return;
+
+    _bleSessionReleased = true;
+    final shouldMarkDisconnected =
+        _bleNotifier.value.device?.remoteId.str == lockId;
+
+    BleConnectionMonitor.stopMonitoring();
+    await BleService.releaseOnDemandConnection(lockId);
+
+    if (shouldMarkDisconnected) {
+      _bleNotifier.markDisconnected();
+    }
+  }
+
+  Future<void> _handleBackToDashboard() async {
+    if (!mounted) return;
+    await _releaseLockBleSession();
+    if (!mounted) return;
+    widget.onBackToDashboard?.call();
+  }
+
+  Future<void> _completeUnlockSuccess(String deviceId) async {
+    setState(() => _isUnlocked = true);
+    widget.onUnlockSuccess();
+    notifyLockUnlockSuccess(ref);
+    _bleNotifier.endConnecting();
+    await ref.read(inAppReviewProvider.notifier).countUp();
+
+    BleConnectionMonitor.stopMonitoring();
+
+    await Future<void>.delayed(_postUnlockSuccessDelay);
+    if (!mounted) return;
+
+    await _releaseLockBleSession();
+    if (!mounted) return;
+    widget.onBackToDashboard?.call();
   }
 
   void _openDrawer() => _scaffoldKey.currentState?.openDrawer();
@@ -202,20 +253,21 @@ class _HomePageState extends ConsumerState<HomePage>
   }
 
   Future<void> _handleLockTap(String deviceId) async {
-    if (_isUnlocking) return;
+    if (_isUnlocking || _isUnlocked) return;
 
     setState(() => _isUnlocking = true);
     _startUnlockAnimation();
 
     try {
+      await LockConnectionHelper.awaitPendingConnect(deviceId);
       final isUnlocked = await BleService.connectAndUnLock(deviceId);
 
       if (!mounted) return;
 
       if (isUnlocked) {
-        setState(() => _isUnlocked = true);
-        widget.onUnlockSuccess();
-        await ref.read(inAppReviewProvider.notifier).countUp();
+        _stopUnlockAnimation();
+        setState(() => _isUnlocking = false);
+        await _completeUnlockSuccess(deviceId);
       }
     } on LockAuthenticationException {
       if (!mounted) return;
@@ -386,8 +438,24 @@ class _HomePageState extends ConsumerState<HomePage>
   Widget build(BuildContext context) {
     ref.watch(savedLocksProvider);
     final bleState = ref.watch(bleProvider);
+    final lockId = widget.lockDeviceId ?? bleState.device?.remoteId.str;
+    final savedLock =
+        lockId != null ? ref.read(savedLocksProvider.notifier).lockById(lockId) : null;
+
+    ref.listen(lockUnlockEventProvider, (previous, next) {
+      if (previous == next) return;
+      _stopUnlockAnimation();
+      if (mounted) {
+        setState(() {
+          _isUnlocked = true;
+          _isUnlocking = false;
+        });
+      }
+    });
 
     return SmartLockConnector(
+      fallbackDeviceId: lockId,
+      fallbackBatteryLevel: savedLock?.lastBatteryLevel,
       onConnectedBuilder: (context, device, batteryLevel) {
         final displayBattery = batteryLevel > 0 ? batteryLevel : 0;
 
@@ -401,7 +469,9 @@ class _HomePageState extends ConsumerState<HomePage>
                 _LockScreenHeader(
                   title: _headerTitle(device, bleState),
                   onMenuTap: _openDrawer,
-                  onBackTap: widget.onBackToDashboard,
+                  onBackTap: widget.onBackToDashboard != null
+                      ? _handleBackToDashboard
+                      : null,
                 ),
                 _LockSubHeader(
                   deviceLabel: _deviceLabel(bleState, device: device).toUpperCase(),
@@ -438,7 +508,9 @@ class _HomePageState extends ConsumerState<HomePage>
               _LockScreenHeader(
                 title: _headerTitle(null, bleState),
                 onMenuTap: _openDrawer,
-                onBackTap: widget.onBackToDashboard,
+                onBackTap: widget.onBackToDashboard != null
+                    ? _handleBackToDashboard
+                    : null,
               ),
               Expanded(
                 child: Center(

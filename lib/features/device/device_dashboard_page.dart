@@ -44,6 +44,7 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
   static const _disabledColor = Color(0xFF5C5D62);
 
   String? _connectingLockId;
+  final Set<String> _unlockReadyLockIds = {};
 
   @override
   void initState() {
@@ -101,6 +102,9 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
           batteryLevel: readings.batteryLevel,
           rssi: readings.rssi,
         );
+    if (mounted) {
+      setState(() => _unlockReadyLockIds.add(lockId));
+    }
     BleConnectionMonitor.startMonitoring(
       deviceId: lockId,
       bleNotifier: ref.read(bleProvider.notifier),
@@ -118,7 +122,9 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
 
     if (BleService.isDeviceConnected(lockId)) {
       await _syncProviderFromLiveGatt(lockId);
-      if (mounted) setState(() {});
+      if (mounted) {
+        setState(() => _unlockReadyLockIds.add(lockId));
+      }
       return;
     }
 
@@ -127,7 +133,7 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
       setState(() => _connectingLockId = lockId);
       final connected = await LockConnectionHelper.awaitPendingConnect(lockId);
       if (connected && mounted) {
-        setState(() {});
+        setState(() => _unlockReadyLockIds.add(lockId));
       }
       return;
     }
@@ -144,12 +150,28 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
         background: true,
       );
       if (connected && mounted) {
-        setState(() {});
+        setState(() => _unlockReadyLockIds.add(lockId));
       }
     } finally {
       if (mounted) {
         _resetBusyConnectionState();
       }
+    }
+  }
+
+  void _markLockUnlockReady(String lockId) {
+    if (mounted) {
+      setState(() => _unlockReadyLockIds.add(lockId));
+    } else {
+      _unlockReadyLockIds.add(lockId);
+    }
+  }
+
+  void _clearLockUnlockReady(String lockId) {
+    if (mounted) {
+      setState(() => _unlockReadyLockIds.remove(lockId));
+    } else {
+      _unlockReadyLockIds.remove(lockId);
     }
   }
 
@@ -170,8 +192,13 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
   }
 
   bool _isLockConnected(SavedLock lock, BleData bleState) {
+    if (_unlockReadyLockIds.contains(lock.id)) return true;
     if (_hasBleSession(lock, bleState)) return true;
-    return BleService.isDeviceConnected(lock.id);
+    if (BleService.isDeviceConnected(lock.id)) return true;
+    if (LockConnectionHelper.isValidToken(BleService.tokenForDevice(lock.id))) {
+      return true;
+    }
+    return false;
   }
 
   String _bleStateSummary(BleData bleState, String lockId) {
@@ -307,6 +334,7 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
         final afterPending = ref.read(bleProvider);
         if (_isLockConnected(lock, afterPending)) {
           print('[LockCard] in-flight connect succeeded — navigating');
+          _markLockUnlockReady(lock.id);
           BleDebugLog.tap('In-flight connect succeeded — opening lock screen');
           await _navigateToLockScreen(lock);
           return;
@@ -316,6 +344,7 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
 
       if (_isLockConnected(lock, bleState)) {
         print('[LockCard] already connected — navigating');
+        _markLockUnlockReady(lock.id);
         BleDebugLog.tap('Already connected — opening lock screen');
         await _navigateToLockScreen(lock);
         return;
@@ -361,6 +390,7 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
       );
       if (connected || _isLockConnected(lock, latestBleState)) {
         print('[LockCard] connect succeeded — navigating');
+        _markLockUnlockReady(lock.id);
         BleDebugLog.tap('Connect succeeded — opening lock screen');
         await _navigateToLockScreen(lock);
         return;
@@ -470,6 +500,7 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
     }
 
     await ref.read(savedLocksProvider.notifier).removeLock(lock.id);
+    _clearLockUnlockReady(lock.id);
   }
 
   Future<void> _reconnectPrimaryInBackground() async {
@@ -610,6 +641,10 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
       if (previous == next) return;
       _resetBusyConnectionState();
       ref.read(bleProvider.notifier).endConnecting();
+      final activeId = ref.read(savedLocksProvider).activeLockId;
+      if (activeId != null) {
+        _markLockUnlockReady(activeId);
+      }
     });
 
     final locksState = ref.watch(savedLocksProvider);

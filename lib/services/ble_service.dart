@@ -34,6 +34,16 @@ class BleService {
 
   static String? tokenForDevice(String deviceId) => _deviceTokens[deviceId];
 
+  static bool hasAuthenticatedToken(String deviceId) =>
+      _isValidToken(_deviceTokens[deviceId]);
+
+  static bool wasUnlockedThisSession(String deviceId) =>
+      _deviceUnlockedThisSession[deviceId] == true;
+
+  static void acknowledgeUnlockDisconnect(String deviceId) {
+    _deviceUnlockedThisSession.remove(deviceId);
+  }
+
   static _BleUnlockProfile _activeUnlockProfile = _BleUnlockProfile.phone;
 
   static bool get _useWatchBleTuning =>
