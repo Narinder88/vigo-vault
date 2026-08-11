@@ -305,7 +305,8 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
     final resolvedLock = lock ?? _findLock(lockId);
     if (resolvedLock == null) return;
 
-    final ble = bleState ?? ref.read(bleProvider);
+    final BleData ble =
+        bleState ?? ref.read(bleProvider.notifier).value;
     final text = _formatDebugState(lockId, step, resolvedLock, ble);
     if (!mounted) {
       _debugStateTracker[lockId] = text;
