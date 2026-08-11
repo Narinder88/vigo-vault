@@ -57,6 +57,7 @@ class _HomePageState extends ConsumerState<HomePage>
   late Animation<double> _pulseAnimation;
   late final BleProvider _bleNotifier;
   bool _bleSessionReleased = false;
+  bool _didPopToDashboard = false;
 
   static const _postUnlockSuccessDelay = Duration(seconds: 2);
 
@@ -129,28 +130,42 @@ class _HomePageState extends ConsumerState<HomePage>
     }
   }
 
+  Future<void> _popBackToDashboardSafely() async {
+    if (!mounted || _didPopToDashboard) return;
+
+    final callback = widget.onBackToDashboard;
+    if (callback == null) return;
+
+    _didPopToDashboard = true;
+
+    // Yield one frame so unlock UI finishes painting before we pop the route.
+    await Future<void>.delayed(Duration.zero);
+    if (!mounted) return;
+
+    callback();
+  }
+
   Future<void> _handleBackToDashboard() async {
     if (!mounted) return;
-    await _releaseLockBleSession();
-    if (!mounted) return;
-    widget.onBackToDashboard?.call();
+    await _popBackToDashboardSafely();
   }
 
   Future<void> _completeUnlockSuccess(String deviceId) async {
+    if (!mounted) return;
+
     setState(() => _isUnlocked = true);
     widget.onUnlockSuccess();
     notifyLockUnlockSuccess(ref);
     _bleNotifier.endConnecting();
-    await ref.read(inAppReviewProvider.notifier).countUp();
-
     BleConnectionMonitor.stopMonitoring();
+
+    unawaited(ref.read(inAppReviewProvider.notifier).countUp());
 
     await Future<void>.delayed(_postUnlockSuccessDelay);
     if (!mounted) return;
 
-    await _releaseLockBleSession();
-    if (!mounted) return;
-    widget.onBackToDashboard?.call();
+    // Pop first while the lock screen is still mounted; BLE release runs in dispose.
+    await _popBackToDashboardSafely();
   }
 
   void _openDrawer() => _scaffoldKey.currentState?.openDrawer();
