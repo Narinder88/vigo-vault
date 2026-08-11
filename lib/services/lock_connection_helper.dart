@@ -1,13 +1,32 @@
+import 'dart:async';
+
 import 'package:fitness_snack_lock/providers/ble_provider.dart';
 import 'package:fitness_snack_lock/providers/notification_manager_provider.dart';
 import 'package:fitness_snack_lock/providers/saved_locks_provider.dart';
 import 'package:fitness_snack_lock/services/ble_connection_monitor.dart';
+import 'package:fitness_snack_lock/services/ble_debug_log.dart';
 import 'package:fitness_snack_lock/services/ble_service.dart';
 import 'package:fitness_snack_lock/services/pairing_service.dart';
 import 'package:fitness_snack_lock/services/saved_lock_storage.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 
 class LockConnectionHelper {
+  /// GATT connect + discovery budget for foreground tap-to-open.
+  static const Duration _interactiveConnectTimeout = Duration(seconds: 12);
+  /// AES handshake budget — starts only after GATT is ready.
+  static const Duration _interactiveHandshakeTimeout = Duration(seconds: 5);
+  /// Outer cap for the full foreground session (GATT + handshake).
+  static Duration get _interactiveSessionTimeout =>
+      _interactiveConnectTimeout + _interactiveHandshakeTimeout;
+
+  static final Map<String, Future<bool>> _pendingConnectByDeviceId = {};
+
+  static bool hasPendingConnect(String deviceId) =>
+      _pendingConnectByDeviceId.containsKey(deviceId);
+
+  static Future<bool>? pendingConnectFuture(String deviceId) =>
+      _pendingConnectByDeviceId[deviceId];
+
   static bool isValidToken(String? token) {
     return token != null && token.isNotEmpty;
   }
@@ -57,11 +76,43 @@ class LockConnectionHelper {
     NotificationManagerProvider? notificationManager,
     bool switchConnection = true,
     bool background = false,
+  }) {
+    final existing = _pendingConnectByDeviceId[deviceId];
+    if (existing != null) {
+      return existing;
+    }
+
+    final connectTask = _connectAndRestoreSessionImpl(
+      deviceId: deviceId,
+      bleNotifier: bleNotifier,
+      locksNotifier: locksNotifier,
+      notificationManager: notificationManager,
+      switchConnection: switchConnection,
+      background: background,
+    );
+
+    _pendingConnectByDeviceId[deviceId] = connectTask;
+    return connectTask.whenComplete(() {
+      if (_pendingConnectByDeviceId[deviceId] == connectTask) {
+        _pendingConnectByDeviceId.remove(deviceId);
+      }
+    });
+  }
+
+  static Future<bool> _connectAndRestoreSessionImpl({
+    required String deviceId,
+    required BleProvider bleNotifier,
+    SavedLocksNotifier? locksNotifier,
+    NotificationManagerProvider? notificationManager,
+    bool switchConnection = true,
+    bool background = false,
   }) async {
     BleConnectionMonitor.stopMonitoring();
-    if (!background) {
-      bleNotifier.beginConnecting(deviceId);
-    }
+    BleDebugLog.ble(
+      'Session connect start for $deviceId (background=$background'
+      '${background ? ", no short timeout, autoConnect" : ""})',
+    );
+    bleNotifier.beginConnecting(deviceId);
 
     var sessionEstablished = false;
 
@@ -70,25 +121,44 @@ class LockConnectionHelper {
         await BleService.prepareFreshConnection(deviceId);
       }
 
-      final knownDeviceIds = locksNotifier?.allDeviceIds ?? const [];
+      final connectFuture = background
+          ? BleService.connectForBackgroundWarmup(deviceId)
+          : BleService.connectForUnlock(deviceId);
 
-      final connected = switchConnection
-          ? await BleService.switchConnection(
-              deviceId,
-              knownDeviceIds: knownDeviceIds,
-            )
-          : await BleService.connect(deviceId);
+      final bool connected;
+      if (background) {
+        connected = await connectFuture;
+      } else {
+        connected = await connectFuture.timeout(
+          _interactiveSessionTimeout,
+          onTimeout: () {
+            BleDebugLog.error(
+              'Session connect timed out after '
+              '${_interactiveSessionTimeout.inSeconds}s for $deviceId '
+              '(GATT ${_interactiveConnectTimeout.inSeconds}s + '
+              'handshake ${_interactiveHandshakeTimeout.inSeconds}s)',
+            );
+            return false;
+          },
+        );
+      }
       if (!connected) {
+        BleDebugLog.error('Session connect failed for $deviceId (timeout or GATT error)');
         if (!background) {
           bleNotifier.markConnectFailed();
+        } else {
+          bleNotifier.endConnecting();
         }
         return false;
       }
 
       final token = BleService.tokenForDevice(deviceId);
       if (!isValidToken(token)) {
+        BleDebugLog.error('Session connect missing token for $deviceId');
         if (!background) {
           bleNotifier.markConnectFailed();
+        } else {
+          bleNotifier.endConnecting();
         }
         return false;
       }
@@ -122,24 +192,71 @@ class LockConnectionHelper {
         );
       }
 
+      bleNotifier.setConnected(
+        device: device,
+        token: token,
+        batteryLevel: readings.batteryLevel,
+        rssi: readings.rssi,
+        customDeviceName: displayName,
+      );
+
+      BleConnectionMonitor.startMonitoring(
+        deviceId: deviceId,
+        bleNotifier: bleNotifier,
+      );
+
+      BleDebugLog.ble(
+        'Session connect success for $deviceId '
+        '(gatt=${BleService.isDeviceConnected(deviceId)}, background=$background)',
+      );
+
       return true;
-    } catch (_) {
+    } catch (error) {
+      BleDebugLog.error('Session connect exception for $deviceId: $error');
       if (!background) {
         bleNotifier.markConnectFailed();
+      } else {
+        bleNotifier.endConnecting();
       }
       return false;
     } finally {
-      if (sessionEstablished || BleService.isDeviceConnected(deviceId)) {
-        await BleService.releaseOnDemandConnection(deviceId);
-      }
-      BleConnectionMonitor.stopMonitoring();
-      if (!background) {
-        bleNotifier.clearSession();
-        if (bleNotifier.value.isConnecting) {
-          bleNotifier.endConnecting();
+      if (!sessionEstablished) {
+        if (BleService.isDeviceConnected(deviceId)) {
+          await BleService.releaseOnDemandConnection(deviceId);
         }
+        if (!background) {
+          bleNotifier.clearSession();
+        }
+        BleConnectionMonitor.stopMonitoring();
+      } else if (background) {
+        BleDebugLog.ble(
+          'Background session established for $deviceId — provider updated',
+        );
+      }
+      if (bleNotifier.value.isConnecting) {
+        bleNotifier.endConnecting();
       }
     }
+  }
+
+  /// Waits for an in-flight dashboard connection before starting unlock.
+  static Future<bool> awaitPendingConnect(String deviceId) async {
+    final pending = _pendingConnectByDeviceId[deviceId];
+    if (pending != null) {
+      BleDebugLog.ble('Awaiting pending connect for $deviceId');
+      return pending;
+    }
+    return false;
+  }
+
+  /// Apple Watch MethodChannel bridge only — uses tuned GATT unlock path.
+  static Future<bool> triggerUnlock(String deviceId) async {
+    final awaitedConnect = await awaitPendingConnect(deviceId);
+    if (awaitedConnect) {
+      BleDebugLog.tap('Pending connect finished for $deviceId — using live session');
+    }
+    await BleService.forceCleanDisconnectBeforeUnlock(deviceId);
+    return BleService.unlockLock(deviceId);
   }
 
   /// On-demand mode: the phone no longer keeps a background GATT session open.
