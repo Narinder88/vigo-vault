@@ -159,6 +159,13 @@ class _HomePageState extends ConsumerState<HomePage>
     _bleNotifier.endConnecting();
     BleConnectionMonitor.stopMonitoring();
 
+    await LockConnectionHelper.persistFreshTelemetry(
+      deviceId: deviceId,
+      bleNotifier: _bleNotifier,
+      locksNotifier: ref.read(savedLocksProvider.notifier),
+      notificationManager: ref.read(notificationManagerProvider.notifier),
+    );
+
     unawaited(ref.read(inAppReviewProvider.notifier).countUp());
 
     await Future<void>.delayed(_postUnlockSuccessDelay);

@@ -21,6 +21,7 @@ class BleService {
   static final Map<String, bool> _deviceUnlockedThisSession = {};
   static final Map<String, StreamSubscription<List<int>>?>
       _handshakeNotifySubscriptions = {};
+  static final Map<String, int> _lastStandardBatteryByDeviceId = {};
 
   static const int _maxHandshakeAttempts = 3;
 
@@ -33,6 +34,10 @@ class BleService {
   }
 
   static String? tokenForDevice(String deviceId) => _deviceTokens[deviceId];
+
+  /// Most recent standard GATT (180F/2A19) battery read for [deviceId], if any.
+  static int? lastStandardBatteryLevel(String deviceId) =>
+      _lastStandardBatteryByDeviceId[deviceId];
 
   static bool hasAuthenticatedToken(String deviceId) =>
       _isValidToken(_deviceTokens[deviceId]);
@@ -257,7 +262,12 @@ class BleService {
       }
 
       try {
-        await device.discoverServices().timeout(connectTimeout);
+        final services =
+            await device.discoverServices().timeout(connectTimeout);
+        await _readAndCacheStandardBatteryLevel(
+          deviceId,
+          services: services,
+        );
       } on TimeoutException {
         await _safeDisconnect(device);
         rethrow;
@@ -1149,42 +1159,73 @@ class BleService {
         );
   }
 
-  static Future<int?> _readGattBatteryLevel(BluetoothDevice device) async {
-    try {
-      final services = await _discoverServices(device).timeout(
-        _batteryReadTimeout,
-        onTimeout: () => <BluetoothService>[],
-      );
+  static Future<int?> _readStandardBatteryLevelFromServices(
+    List<BluetoothService> services,
+  ) async {
+    for (final service in services) {
+      if (service.uuid != _batteryServiceUuid) continue;
 
-      for (final service in services) {
-        if (service.uuid != _batteryServiceUuid) continue;
+      for (final characteristic in service.characteristics) {
+        if (characteristic.uuid != _batteryLevelCharacteristicUuid) continue;
+        if (!characteristic.properties.read) continue;
 
-        for (final characteristic in service.characteristics) {
-          if (characteristic.uuid != _batteryLevelCharacteristicUuid) continue;
-          if (!characteristic.properties.read) continue;
+        try {
+          final value = await characteristic
+              .read(timeout: _batteryReadTimeout.inSeconds)
+              .timeout(
+                _batteryReadTimeout,
+                onTimeout: () => <int>[],
+              );
 
-          try {
-            final value = await characteristic
-                .read(timeout: _batteryReadTimeout.inSeconds)
-                .timeout(
-                  _batteryReadTimeout,
-                  onTimeout: () => <int>[],
-                );
+          if (value.isEmpty) continue;
 
-            if (value.isEmpty) return null;
-
-            return _normalizeBatteryLevel(value.first);
-          } catch (_) {
-            return null;
-          }
+          final level = _normalizeBatteryLevel(value.first);
+          _logHandshake(
+            'Standard battery characteristic read (180F/2A19): $level%',
+          );
+          return level;
+        } catch (error) {
+          _logHandshake(
+            'Standard battery characteristic read failed: $error',
+          );
         }
       }
-    } catch (_) {
-      return null;
     }
 
     return null;
   }
+
+  static Future<int?> _readAndCacheStandardBatteryLevel(
+    String deviceId, {
+    List<BluetoothService>? services,
+  }) async {
+    final device = BluetoothDevice.fromId(deviceId);
+    if (!device.isConnected) return null;
+
+    List<BluetoothService> resolvedServices;
+    if (services != null) {
+      resolvedServices = services;
+    } else {
+      try {
+        resolvedServices = await _discoverServices(device).timeout(
+          _batteryReadTimeout,
+          onTimeout: () => <BluetoothService>[],
+        );
+      } catch (_) {
+        return null;
+      }
+    }
+
+    final level = await _readStandardBatteryLevelFromServices(resolvedServices);
+    if (level != null) {
+      _lastStandardBatteryByDeviceId[deviceId] = level;
+    }
+    return level;
+  }
+
+  /// Explicit GATT read of Battery Level (180F/2A19) on a live connection.
+  static Future<int?> readStandardBatteryLevel(String deviceId) =>
+      _readAndCacheStandardBatteryLevel(deviceId);
 
   static int? _parseBatteryFromLockResponse(
     List<int> response,
@@ -1391,6 +1432,7 @@ class BleService {
       try {
         if (isDeviceConnected(deviceId)) {
           _activeDeviceId = deviceId;
+          await readStandardBatteryLevel(deviceId);
           BleDebugLog.ble(
             'Background warm-up: authenticated session already live for $deviceId',
           );
@@ -1429,6 +1471,7 @@ class BleService {
       final linkAlive = await verifyConnection(deviceId);
       if (linkAlive) {
         _activeDeviceId = deviceId;
+        await readStandardBatteryLevel(deviceId);
         print('DEBUG: connect completed successfully');
         return true;
       }
@@ -1847,6 +1890,7 @@ class BleService {
   static Future<String> _prepareOnDemandUnlockSession(String deviceId) async {
     if (isDeviceConnected(deviceId)) {
       _activeDeviceId = deviceId;
+      await readStandardBatteryLevel(deviceId);
       _logUnlock(
         'Skipping reconnect — authenticated session already active for $deviceId',
       );
@@ -1943,6 +1987,7 @@ class BleService {
       }
 
       await device.discoverServices().timeout(_unlockGattConnectTimeout);
+      await _readAndCacheStandardBatteryLevel(deviceId);
       await _iosBleSettle('after service discovery');
 
       _logUnlock(
@@ -2023,6 +2068,10 @@ class BleService {
 
     _logUnlock('Unlock succeeded for $deviceId (ack frame 05 02 01 00)');
     _deviceUnlockedThisSession[deviceId] = true;
+    final postUnlockBattery = await readStandardBatteryLevel(deviceId);
+    if (postUnlockBattery != null) {
+      _logUnlock('Post-unlock battery read: $postUnlockBattery%');
+    }
     return true;
   }
 
@@ -2104,11 +2153,9 @@ class BleService {
   }
 
   static Future<int> _fetchBatteryLevel(String deviceId, String token) async {
-    final device = BluetoothDevice.fromId(deviceId);
-
     int? gattBatteryLevel;
     try {
-      gattBatteryLevel = await _readGattBatteryLevel(device).timeout(
+      gattBatteryLevel = await readStandardBatteryLevel(deviceId).timeout(
         _batteryReadTimeout,
         onTimeout: () => null,
       );

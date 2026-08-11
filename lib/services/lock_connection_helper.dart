@@ -40,11 +40,16 @@ class LockConnectionHelper {
     required String deviceId,
     required String token,
   }) async {
-    final batteryLevel = await BleService.getBatteryLevel(
-      deviceId,
-      ignoreConnect: true,
-      token: token,
-    );
+    var batteryLevel = await BleService.readStandardBatteryLevel(deviceId);
+
+    if (batteryLevel == null) {
+      final fallback = await BleService.getBatteryLevel(
+        deviceId,
+        ignoreConnect: true,
+        token: token,
+      );
+      batteryLevel = fallback >= 0 ? fallback : null;
+    }
 
     var rssi = -100;
     try {
@@ -52,9 +57,30 @@ class LockConnectionHelper {
     } catch (_) {}
 
     return (
-      batteryLevel: batteryLevel >= 0 ? batteryLevel : null,
+      batteryLevel: batteryLevel,
       rssi: rssi,
     );
+  }
+
+  static Future<void> persistFreshTelemetry({
+    required String deviceId,
+    required BleProvider bleNotifier,
+    SavedLocksNotifier? locksNotifier,
+    NotificationManagerProvider? notificationManager,
+  }) async {
+    final batteryLevel = BleService.lastStandardBatteryLevel(deviceId);
+    if (batteryLevel == null) return;
+
+    bleNotifier.setBatteryLevel(batteryLevel);
+    if (locksNotifier != null) {
+      await locksNotifier.updateTelemetry(
+        lockId: deviceId,
+        batteryLevel: batteryLevel,
+      );
+    }
+    if (notificationManager != null) {
+      await notificationManager.createReachBatteryNotification(batteryLevel);
+    }
   }
 
   static String defaultDisplayName(BluetoothDevice device) {

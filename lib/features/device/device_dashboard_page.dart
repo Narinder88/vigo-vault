@@ -105,6 +105,11 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
           batteryLevel: readings.batteryLevel,
           rssi: readings.rssi,
         );
+    await ref.read(savedLocksProvider.notifier).updateTelemetry(
+          lockId: lockId,
+          batteryLevel: readings.batteryLevel,
+          rssi: readings.rssi,
+        );
     BleConnectionMonitor.startMonitoring(
       deviceId: lockId,
       bleNotifier: ref.read(bleProvider.notifier),
