@@ -13,6 +13,7 @@ class PairedLockStorage {
   static const _fallbackKey = 'paired_lock_ids_fallback';
   static const _fallbackMigratedKey = 'paired_lock_ids_migrated';
   static const _fallbackSecretKeyPrefix = 'lock_secret_';
+  static const _fallbackPasswordPrefix = 'lock_password_';
   static var _fallbackMigrationChecked = false;
 
   static Future<void> _ensureFallbackMigrated() async {
@@ -100,6 +101,9 @@ class PairedLockStorage {
     final ids = await _loadFallbackIds();
     ids.remove(deviceId);
     await _saveFallbackIds(ids);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('$_fallbackSecretKeyPrefix$deviceId');
+    await prefs.remove('$_fallbackPasswordPrefix$deviceId');
   }
 
   /// Reads the per-lock AES-128 master key from secure storage (Keychain / EncryptedSharedPreferences).
@@ -152,7 +156,22 @@ class PairedLockStorage {
     return RegExp(r'^[0-9a-f]{32}$').hasMatch(normalized);
   }
 
-  /// Returns the stored AES master key, persisting the factory default when missing.
+  static bool isFactoryAesKey(String key) {
+    return sanitizeAesKeyHex(key) ==
+        DataRequestPattern.defaultEncryptKey.toLowerCase();
+  }
+
+  /// True when a non-factory AES-128 key is stored for [deviceId].
+  static Future<bool> hasCustomAesKey(String deviceId) async {
+    final key = await getSecretKey(deviceId);
+    if (key == null || key.isEmpty) return false;
+    final normalized = sanitizeAesKeyHex(key);
+    return isValidAesKeyHex(normalized) && !isFactoryAesKey(normalized);
+  }
+
+  /// Returns the stored AES master key, or the factory default when missing.
+  /// Does not persist the factory key — custom keys are saved only after
+  /// confirmed hardware rotation (`07 03 01 00`).
   static Future<String> ensureSecretKey(String deviceId) async {
     final existing = await getSecretKey(deviceId);
     if (existing != null && existing.isNotEmpty) {
@@ -165,9 +184,79 @@ class PairedLockStorage {
       }
     }
 
-    const factoryKey = DataRequestPattern.defaultEncryptKey;
-    await saveSecretKey(deviceId, factoryKey);
-    return factoryKey.toLowerCase();
+    return DataRequestPattern.defaultEncryptKey.toLowerCase();
+  }
+
+  static String sanitizePasswordHex(String password) {
+    return password.replaceAll(RegExp(r'[\s\r\n:]'), '').toLowerCase();
+  }
+
+  static bool isValidPasswordHex(String password) {
+    return RegExp(r'^[0-9a-f]{12}$').hasMatch(sanitizePasswordHex(password));
+  }
+
+  static bool isFactoryPassword(String password) {
+    return sanitizePasswordHex(password) ==
+        DataRequestPattern.defaultPasswordHex.toLowerCase();
+  }
+
+  static Future<String?> getPassword(String deviceId) async {
+    if (deviceId.isEmpty) return null;
+
+    if (_useNativeSecureStorage) {
+      try {
+        final password = await _channel.invokeMethod<String>(
+          'getPassword',
+          {'deviceId': deviceId},
+        );
+        return password?.trim();
+      } on PlatformException {
+        return null;
+      }
+    }
+
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString('$_fallbackPasswordPrefix$deviceId');
+  }
+
+  static Future<void> savePassword(String deviceId, String passwordHex) async {
+    if (deviceId.isEmpty || passwordHex.isEmpty) return;
+    final normalized = sanitizePasswordHex(passwordHex);
+    if (!isValidPasswordHex(normalized)) return;
+
+    if (_useNativeSecureStorage) {
+      await _channel.invokeMethod<void>('savePassword', {
+        'deviceId': deviceId,
+        'password': normalized,
+      });
+      return;
+    }
+
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('$_fallbackPasswordPrefix$deviceId', normalized);
+  }
+
+  static Future<bool> hasCustomPassword(String deviceId) async {
+    final password = await getPassword(deviceId);
+    if (password == null || password.isEmpty) return false;
+    final normalized = sanitizePasswordHex(password);
+    return isValidPasswordHex(normalized) && !isFactoryPassword(normalized);
+  }
+
+  /// Returns the stored 6-byte password hex, or the factory default when missing.
+  static Future<String> ensurePassword(String deviceId) async {
+    final existing = await getPassword(deviceId);
+    if (existing != null && existing.isNotEmpty) {
+      final normalized = sanitizePasswordHex(existing);
+      if (isValidPasswordHex(normalized)) {
+        if (normalized != existing) {
+          await savePassword(deviceId, normalized);
+        }
+        return normalized;
+      }
+    }
+
+    return DataRequestPattern.defaultPasswordHex.toLowerCase();
   }
 
   /// Pushes the lock MAC and secret key to the paired watch app (Wear OS / watchOS).
@@ -175,15 +264,17 @@ class PairedLockStorage {
   static Future<void> syncLockToWatch(String deviceId) async {
     if (deviceId.isEmpty || !_useNativeSecureStorage) return;
 
-    try {
-      final secretKey = await getSecretKey(deviceId);
-      await _channel.invokeMethod<void>(
-        'syncLockToWatch',
-        {
-          'deviceId': deviceId,
-          if (secretKey != null && secretKey.isNotEmpty) 'secretKey': secretKey,
-        },
-      );
+      try {
+        final secretKey = await getSecretKey(deviceId);
+        final password = await getPassword(deviceId);
+        await _channel.invokeMethod<void>(
+          'syncLockToWatch',
+          {
+            'deviceId': deviceId,
+            if (secretKey != null && secretKey.isNotEmpty) 'secretKey': secretKey,
+            if (password != null && password.isNotEmpty) 'password': password,
+          },
+        );
     } on MissingPluginException catch (error) {
       debugPrint('syncLockToWatch unavailable (no native handler): $error');
     } on PlatformException catch (error) {

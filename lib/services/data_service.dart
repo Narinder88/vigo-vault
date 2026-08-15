@@ -1,3 +1,5 @@
+import 'dart:math';
+
 import 'package:convert/convert.dart';
 import 'package:encrypt/encrypt.dart';
 import 'package:flutter/foundation.dart' hide Key;
@@ -8,6 +10,8 @@ class DataRequestPattern {
   static const String defaultEncryptKey = '3A60432A5C01211F291E0F4E0C132825';
   static const String defaultTokenHex = '00000000';
   static const String defaultUnlockSerialHex = '000001';
+  /// Factory default password hex: six ASCII '0' bytes (`000000`).
+  static const String defaultPasswordHex = '303030303030';
   /// Factory default password: six ASCII '0' bytes (not hex-encoded "303030...").
   static const List<int> defaultPasswordBytes = [
     0x30,
@@ -23,15 +27,50 @@ class DataRequestPattern {
     return defaultEncryptKey;
   }
 
+  static List<int> generateSecureRandomBytes(int length) {
+    final random = Random.secure();
+    return List<int>.generate(length, (_) => random.nextInt(256));
+  }
+
+  /// Cryptographically secure random 16-byte AES-128 key as 32 hex chars.
+  static String generateAesKeyHex() {
+    return hex.encode(generateSecureRandomBytes(16));
+  }
+
+  /// Cryptographically secure random 6-byte lock password.
+  static List<int> generatePasswordBytes() {
+    return generateSecureRandomBytes(6);
+  }
+
+  static String passwordBytesToHex(List<int> passwordBytes) {
+    if (passwordBytes.length != 6) {
+      throw ArgumentError('Password must be exactly 6 bytes.');
+    }
+    return hex.encode(passwordBytes);
+  }
+
+  static List<int> passwordBytesFromHex(String passwordHex) {
+    return _decodeFixedBytes(passwordHex, 6, 'PWD');
+  }
+
   /// Command 06 01: request a 4-byte session token from the lock.
   static String getTokenRequestHex() {
     return _frameToHex(const [0x06, 0x01, 0x01, 0x01, 0x00]);
+  }
+
+  static List<int> _resolvedPasswordBytes(List<int>? passwordBytes) {
+    final resolved = passwordBytes ?? defaultPasswordBytes;
+    if (resolved.length != 6) {
+      throw ArgumentError('Password must be exactly 6 bytes.');
+    }
+    return resolved;
   }
 
   /// Builds the 16-byte unlock/auth frame: 05 01 06 + PWD[6] + TOKEN[4] + SN[3].
   static List<int> buildUnlockAuthFrame(
     String tokenHex, {
     String serialHex = defaultUnlockSerialHex,
+    List<int>? passwordBytes,
   }) {
     final tokenBytes = _decodeFixedBytes(tokenHex, 4, 'TOKEN');
     final serialBytes = _decodeFixedBytes(serialHex, 3, 'SN');
@@ -40,7 +79,7 @@ class DataRequestPattern {
       0x05,
       0x01,
       0x06,
-      ...defaultPasswordBytes,
+      ..._resolvedPasswordBytes(passwordBytes),
       ...tokenBytes,
       ...serialBytes,
     ];
@@ -50,21 +89,111 @@ class DataRequestPattern {
   static String getUnlockHex(
     String tokenHex, {
     String serialHex = defaultUnlockSerialHex,
+    List<int>? passwordBytes,
   }) {
-    return _frameToHex(buildUnlockAuthFrame(tokenHex, serialHex: serialHex));
+    return _frameToHex(
+      buildUnlockAuthFrame(
+        tokenHex,
+        serialHex: serialHex,
+        passwordBytes: passwordBytes,
+      ),
+    );
   }
 
   /// Human-readable layout check for unlock/auth frames.
   static String describeUnlockFrame(
     String tokenHex, {
     String serialHex = defaultUnlockSerialHex,
+    List<int>? passwordBytes,
   }) {
-    final frame = buildUnlockAuthFrame(tokenHex, serialHex: serialHex);
+    final frame = buildUnlockAuthFrame(
+      tokenHex,
+      serialHex: serialHex,
+      passwordBytes: passwordBytes,
+    );
     return 'header=${hex.encode(frame.sublist(0, 3))} '
         'pwd=${hex.encode(frame.sublist(3, 9))} '
         'token=${hex.encode(frame.sublist(9, 13))} '
         'sn=${hex.encode(frame.sublist(13, 16))} '
         'full=${hex.encode(frame)}';
+  }
+
+  /// Frame 1 of password rotation: `05 03 06 OLDPWD[6] TOKEN[4] FILL[3]`.
+  static String getPasswordVerifyHex(
+    String tokenHex, {
+    List<int>? oldPasswordBytes,
+  }) {
+    final tokenBytes = _decodeFixedBytes(tokenHex, 4, 'TOKEN');
+    return _frameToHex([
+      0x05,
+      0x03,
+      0x06,
+      ..._resolvedPasswordBytes(oldPasswordBytes),
+      ...tokenBytes,
+    ]);
+  }
+
+  /// Frame 2 of password rotation: `05 04 06 NEWPWD[6] TOKEN[4] FILL[3]`.
+  static String getPasswordSetHex(
+    String tokenHex,
+    List<int> newPasswordBytes,
+  ) {
+    final tokenBytes = _decodeFixedBytes(tokenHex, 4, 'TOKEN');
+    return _frameToHex([
+      0x05,
+      0x04,
+      0x06,
+      ..._resolvedPasswordBytes(newPasswordBytes),
+      ...tokenBytes,
+    ]);
+  }
+
+  static List<int> _aesKeyBytes(String aesKeyHex) {
+    return _decodeFixedBytes(aesKeyHex, 16, 'AES');
+  }
+
+  /// AES key rotation Frame 1: `07 01 08 KEYL[8] TOKEN[4] FILL[1]`.
+  static String getAesKeyLowHex(String tokenHex, String aesKeyHex) {
+    final tokenBytes = _decodeFixedBytes(tokenHex, 4, 'TOKEN');
+    final keyBytes = _aesKeyBytes(aesKeyHex);
+    return _frameToHex([
+      0x07,
+      0x01,
+      0x08,
+      ...keyBytes.sublist(0, 8),
+      ...tokenBytes,
+    ]);
+  }
+
+  /// AES key rotation Frame 2: `07 02 08 KEYH[8] TOKEN[4] FILL[1]`.
+  static String getAesKeyHighHex(String tokenHex, String aesKeyHex) {
+    final tokenBytes = _decodeFixedBytes(tokenHex, 4, 'TOKEN');
+    final keyBytes = _aesKeyBytes(aesKeyHex);
+    return _frameToHex([
+      0x07,
+      0x02,
+      0x08,
+      ...keyBytes.sublist(8, 16),
+      ...tokenBytes,
+    ]);
+  }
+
+  /// Response `05 05 01 RET FILL[12]` — success when `RET == 00`.
+  static bool isPasswordRotationSuccess(List<int> decrypted) {
+    return decrypted.length >= 4 &&
+        decrypted[0] == 0x05 &&
+        decrypted[1] == 0x05 &&
+        decrypted[2] == 0x01 &&
+        decrypted[3] == 0x00;
+  }
+
+  /// Response `07 03 01 RET FILL[12]` — success when `RET == 00`.
+  static bool isAesKeyRotationSuccess(List<int> decrypted) {
+    return decrypted.length >= 4 &&
+        decrypted[0] == 0x07 &&
+        decrypted[1] == 0x03 &&
+        decrypted[2] == 0x01 &&
+        decrypted[3] == 0x00;
   }
 
   static String getPowerHex(String tokenHex) {

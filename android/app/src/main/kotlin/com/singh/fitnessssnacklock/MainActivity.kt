@@ -94,9 +94,50 @@ class MainActivity : FlutterFragmentActivity() {
                         result.success(storage.hasSecretKey(deviceId))
                     }
 
+                    "getPassword" -> {
+                        val deviceId = call.argument<String>("deviceId")
+                        if (deviceId.isNullOrBlank()) {
+                            result.error("invalid_argument", "deviceId is required", null)
+                            return@setMethodCallHandler
+                        }
+                        result.success(storage.getPassword(deviceId))
+                    }
+
+                    "savePassword" -> {
+                        val deviceId = call.argument<String>("deviceId")
+                        val password = call.argument<String>("password")
+                        if (deviceId.isNullOrBlank() || password.isNullOrBlank()) {
+                            result.error("invalid_argument", "deviceId and password are required", null)
+                            return@setMethodCallHandler
+                        }
+                        storage.savePassword(deviceId, password)
+                        WearLockDataSync.syncFromStorage(applicationContext, deviceId)
+                        result.success(null)
+                    }
+
+                    "removePassword" -> {
+                        val deviceId = call.argument<String>("deviceId")
+                        if (deviceId.isNullOrBlank()) {
+                            result.error("invalid_argument", "deviceId is required", null)
+                            return@setMethodCallHandler
+                        }
+                        storage.removePassword(deviceId)
+                        result.success(null)
+                    }
+
+                    "hasPassword" -> {
+                        val deviceId = call.argument<String>("deviceId")
+                        if (deviceId.isNullOrBlank()) {
+                            result.error("invalid_argument", "deviceId is required", null)
+                            return@setMethodCallHandler
+                        }
+                        result.success(storage.hasPassword(deviceId))
+                    }
+
                     "syncLockToWatch" -> {
                         val deviceId = call.argument<String>("deviceId")
                         val secretKey = call.argument<String>("secretKey")
+                        val password = call.argument<String>("password")
                         if (deviceId.isNullOrBlank()) {
                             result.error("invalid_argument", "deviceId is required", null)
                             return@setMethodCallHandler
@@ -105,6 +146,7 @@ class MainActivity : FlutterFragmentActivity() {
                             context = applicationContext,
                             macAddress = deviceId,
                             secretKey = secretKey ?: storage.getSecretKey(deviceId),
+                            password = password ?: storage.getPassword(deviceId),
                         )
                         result.success(null)
                     }

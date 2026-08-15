@@ -33,6 +33,7 @@ class PairedLockSecureStorage(context: Context) {
         updated.remove(deviceId)
         prefs.edit().putStringSet(PAIRED_IDS_KEY, updated).apply()
         removeSecretKey(deviceId)
+        removePassword(deviceId)
     }
 
     fun getSecretKey(deviceId: String): String? {
@@ -55,6 +56,26 @@ class PairedLockSecureStorage(context: Context) {
         return getSecretKey(deviceId)?.isNotEmpty() == true
     }
 
+    fun getPassword(deviceId: String): String? {
+        return getPasswords()[deviceId]
+    }
+
+    fun savePassword(deviceId: String, password: String) {
+        val passwords = getPasswords().toMutableMap()
+        passwords[deviceId] = password
+        persistPasswords(passwords)
+    }
+
+    fun removePassword(deviceId: String) {
+        val passwords = getPasswords().toMutableMap()
+        passwords.remove(deviceId)
+        persistPasswords(passwords)
+    }
+
+    fun hasPassword(deviceId: String): Boolean {
+        return getPassword(deviceId)?.isNotEmpty() == true
+    }
+
     private fun getSecretKeys(): Map<String, String> {
         val raw = prefs.getString(SECRETS_KEY, null) ?: return emptyMap()
         val json = JSONObject(raw)
@@ -73,9 +94,28 @@ class PairedLockSecureStorage(context: Context) {
         prefs.edit().putString(SECRETS_KEY, json.toString()).apply()
     }
 
+    private fun getPasswords(): Map<String, String> {
+        val raw = prefs.getString(PASSWORDS_KEY, null) ?: return emptyMap()
+        val json = JSONObject(raw)
+        val passwords = mutableMapOf<String, String>()
+        for (key in json.keys()) {
+            passwords[key] = json.getString(key)
+        }
+        return passwords
+    }
+
+    private fun persistPasswords(passwords: Map<String, String>) {
+        val json = JSONObject()
+        for ((deviceId, password) in passwords) {
+            json.put(deviceId, password)
+        }
+        prefs.edit().putString(PASSWORDS_KEY, json.toString()).apply()
+    }
+
     companion object {
         private const val PREFS_FILE_NAME = "vigo_vault_paired_locks"
         private const val PAIRED_IDS_KEY = "paired_lock_ids"
         private const val SECRETS_KEY = "lock_secret_keys"
+        private const val PASSWORDS_KEY = "lock_passwords"
     }
 }

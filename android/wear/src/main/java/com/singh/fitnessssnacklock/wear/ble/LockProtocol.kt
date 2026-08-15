@@ -5,6 +5,7 @@ object LockProtocol {
     const val AES_BLOCK_SIZE_BYTES = 16
     const val DEFAULT_ENCRYPT_KEY = "3A60432A5C01211F291E0F4E0C132825"
     const val DEFAULT_UNLOCK_SERIAL_HEX = "000001"
+    const val DEFAULT_PASSWORD_HEX = "303030303030"
 
     val DEFAULT_PASSWORD_BYTES = byteArrayOf(
         0x30, 0x30, 0x30, 0x30, 0x30, 0x30,
@@ -25,14 +26,19 @@ object LockProtocol {
         return frameToHex(byteArrayOf(0x06, 0x01, 0x01, 0x01, 0x00))
     }
 
-    fun unlockFrameHex(tokenHex: String, serialHex: String = DEFAULT_UNLOCK_SERIAL_HEX): String {
+    fun unlockFrameHex(
+        tokenHex: String,
+        serialHex: String = DEFAULT_UNLOCK_SERIAL_HEX,
+        passwordHex: String = DEFAULT_PASSWORD_HEX,
+    ): String {
         val tokenBytes = decodeFixedBytes(tokenHex, 4, "TOKEN")
         val serialBytes = decodeFixedBytes(serialHex, 3, "SN")
+        val passwordBytes = passwordBytesFromHex(passwordHex)
         val frame = ByteArray(16)
         frame[0] = 0x05
         frame[1] = 0x01
         frame[2] = 0x06
-        System.arraycopy(DEFAULT_PASSWORD_BYTES, 0, frame, 3, DEFAULT_PASSWORD_BYTES.size)
+        System.arraycopy(passwordBytes, 0, frame, 3, passwordBytes.size)
         System.arraycopy(tokenBytes, 0, frame, 9, tokenBytes.size)
         System.arraycopy(serialBytes, 0, frame, 13, serialBytes.size)
         return bytesToHex(frame)
@@ -138,6 +144,14 @@ object LockProtocol {
             "$label must be ${expectedBytes * 2} hex characters."
         }
         return hexToBytes(normalized)
+    }
+
+    private fun passwordBytesFromHex(passwordHex: String): ByteArray {
+        return try {
+            decodeFixedBytes(passwordHex, 6, "PWD")
+        } catch (_: IllegalArgumentException) {
+            DEFAULT_PASSWORD_BYTES
+        }
     }
 
     fun hexToBytes(hex: String): ByteArray {

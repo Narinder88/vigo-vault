@@ -11,6 +11,7 @@ import kotlinx.coroutines.flow.asStateFlow
 data class LockConfig(
     val macAddress: String,
     val secretKey: String,
+    val passwordHex: String = LockConfigRepository.DEFAULT_PASSWORD_HEX,
 )
 
 class LockConfigRepository private constructor(
@@ -28,10 +29,11 @@ class LockConfigRepository private constructor(
         _lockConfig.value = config
     }
 
-    fun update(macAddress: String, secretKey: String) {
+    fun update(macAddress: String, secretKey: String, passwordHex: String = DEFAULT_PASSWORD_HEX) {
         val config = LockConfig(
             macAddress = macAddress,
             secretKey = secretKey.ifBlank { DEFAULT_SECRET_KEY },
+            passwordHex = passwordHex.ifBlank { DEFAULT_PASSWORD_HEX },
         )
         persistConfig(config)
         _lockConfig.value = config
@@ -45,8 +47,15 @@ class LockConfigRepository private constructor(
         val secretKey = dataMap.getString(KEY_SECRET_KEY)?.trim()
             .takeUnless { it.isNullOrEmpty() }
             ?: DEFAULT_SECRET_KEY
+        val passwordHex = dataMap.getString(KEY_PASSWORD)?.trim()
+            .takeUnless { it.isNullOrEmpty() }
+            ?: DEFAULT_PASSWORD_HEX
 
-        return LockConfig(macAddress = macAddress, secretKey = secretKey)
+        return LockConfig(
+            macAddress = macAddress,
+            secretKey = secretKey,
+            passwordHex = passwordHex,
+        )
     }
 
     private fun loadCachedConfig(): LockConfig? {
@@ -55,7 +64,12 @@ class LockConfigRepository private constructor(
         if (macAddress.isEmpty()) return null
 
         val secretKey = prefs.getString(KEY_SECRET_KEY, DEFAULT_SECRET_KEY) ?: DEFAULT_SECRET_KEY
-        return LockConfig(macAddress = macAddress, secretKey = secretKey)
+        val passwordHex = prefs.getString(KEY_PASSWORD, DEFAULT_PASSWORD_HEX) ?: DEFAULT_PASSWORD_HEX
+        return LockConfig(
+            macAddress = macAddress,
+            secretKey = secretKey,
+            passwordHex = passwordHex,
+        )
     }
 
     private fun persistConfig(config: LockConfig) {
@@ -63,6 +77,7 @@ class LockConfigRepository private constructor(
             .edit()
             .putString(KEY_MAC_ADDRESS, config.macAddress)
             .putString(KEY_SECRET_KEY, config.secretKey)
+            .putString(KEY_PASSWORD, config.passwordHex)
             .apply()
     }
 
@@ -70,7 +85,9 @@ class LockConfigRepository private constructor(
         const val DATA_PATH = "/lock_config"
         const val KEY_MAC_ADDRESS = "mac_address"
         const val KEY_SECRET_KEY = "secret_key"
+        const val KEY_PASSWORD = "password"
         const val DEFAULT_SECRET_KEY = "3A60432A5C01211F291E0F4E0C132825"
+        const val DEFAULT_PASSWORD_HEX = "303030303030"
         private const val PREFS_NAME = "wear_lock_config"
 
         val DATA_URI: Uri = Uri.parse("wear://*/$DATA_PATH")

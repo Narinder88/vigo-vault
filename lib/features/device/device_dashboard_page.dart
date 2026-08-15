@@ -640,6 +640,22 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
     }
   }
 
+  Future<void> _forgetLockLocally(SavedLock lock) async {
+    final activeDevice = ref.read(bleProvider).device;
+    if (activeDevice?.remoteId.str == lock.id) {
+      await BleService.disconnectDevice(lock.id);
+      ref.read(bleProvider.notifier).reset();
+    } else {
+      BleService.clearDeviceSession(lock.id);
+    }
+
+    await ref.read(savedLocksProvider.notifier).removeLock(lock.id);
+    _clearLockUnlockReady(lock.id);
+    _sessionLockIds.remove(lock.id);
+    _sessionGenerationByLockId.remove(lock.id);
+    _backgroundWarmUpGenerationByLockId.remove(lock.id);
+  }
+
   Future<void> _removeLock(SavedLock lock) async {
     final confirmed = await showDialog<bool>(
       context: context,
@@ -651,7 +667,8 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
             style: TextStyle(color: _labelColor),
           ),
           content: Text(
-            'Remove "${lock.displayName}" from your saved locks?',
+            'This factory-resets "${lock.displayName}" over Bluetooth, '
+            'then removes it from this device. Stay near the lock.',
             style: const TextStyle(color: _subtextColor),
           ),
           actions: [
@@ -671,21 +688,106 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
       },
     );
 
-    if (confirmed != true) return;
+    if (confirmed != true || !mounted) return;
 
-    final activeDevice = ref.read(bleProvider).device;
-    if (activeDevice?.remoteId.str == lock.id) {
-      await BleService.disconnectDevice(lock.id);
-      ref.read(bleProvider.notifier).reset();
-    } else {
-      BleService.clearDeviceSession(lock.id);
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) {
+        return PopScope(
+          canPop: false,
+          child: AlertDialog(
+            backgroundColor: _cardColor,
+            content: const Row(
+              children: [
+                CircularProgressIndicator(color: _accentColor),
+                SizedBox(width: 16),
+                Expanded(
+                  child: Text(
+                    'Resetting lock...',
+                    style: TextStyle(color: _labelColor),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+
+    final result = await LockConnectionHelper.removeLock(
+      deviceId: lock.id,
+      wipeLocal: () => _forgetLockLocally(lock),
+    );
+
+    if (!mounted) return;
+    Navigator.of(context, rootNavigator: true).pop();
+
+    switch (result) {
+      case LockHardwareResetResult.success:
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('${lock.displayName} was reset and removed.'),
+            backgroundColor: _accentColor,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      case LockHardwareResetResult.unreachable:
+        await _offerForceRemove(lock);
+      case LockHardwareResetResult.rejected:
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'The lock could not be reset. It was not removed so you '
+              'are not locked out.',
+            ),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
     }
+  }
 
-    await ref.read(savedLocksProvider.notifier).removeLock(lock.id);
-    _clearLockUnlockReady(lock.id);
-    _sessionLockIds.remove(lock.id);
-    _sessionGenerationByLockId.remove(lock.id);
-    _backgroundWarmUpGenerationByLockId.remove(lock.id);
+  Future<void> _offerForceRemove(SavedLock lock) async {
+    final force = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          backgroundColor: _cardColor,
+          title: const Text(
+            'Lock Unreachable',
+            style: TextStyle(color: _labelColor),
+          ),
+          content: const Text(
+            'Lock is unreachable. Force removing will require a manual '
+            'hardware reset on the padlock itself.',
+            style: TextStyle(color: _subtextColor),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              style: FilledButton.styleFrom(
+                backgroundColor: const Color(0xFFFF2020),
+              ),
+              child: const Text('Force Remove'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (force != true || !mounted) return;
+
+    await LockConnectionHelper.removeLock(
+      deviceId: lock.id,
+      wipeLocal: () => _forgetLockLocally(lock),
+      force: true,
+    );
   }
 
   Future<void> _reconnectPrimaryInBackground() async {

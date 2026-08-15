@@ -15,9 +15,13 @@ class LockConnectionHelper {
   static const Duration _interactiveConnectTimeout = Duration(seconds: 12);
   /// AES handshake budget — starts only after GATT is ready.
   static const Duration _interactiveHandshakeTimeout = Duration(seconds: 5);
-  /// Outer cap for the full foreground session (GATT + handshake).
+  /// Password + AES rotation after the session token.
+  static const Duration _interactiveProvisioningTimeout = Duration(seconds: 6);
+  /// Outer cap for the full foreground session (GATT + handshake + provisioning).
   static Duration get _interactiveSessionTimeout =>
-      _interactiveConnectTimeout + _interactiveHandshakeTimeout;
+      _interactiveConnectTimeout +
+      _interactiveHandshakeTimeout +
+      _interactiveProvisioningTimeout;
 
   static final Map<String, Future<bool>> _pendingConnectByDeviceId = {};
 
@@ -156,7 +160,8 @@ class LockConnectionHelper {
               'Session connect timed out after '
               '${_interactiveSessionTimeout.inSeconds}s for $deviceId '
               '(GATT ${_interactiveConnectTimeout.inSeconds}s + '
-              'handshake ${_interactiveHandshakeTimeout.inSeconds}s)',
+              'handshake ${_interactiveHandshakeTimeout.inSeconds}s + '
+              'provision ${_interactiveProvisioningTimeout.inSeconds}s)',
             );
             return false;
           },
@@ -181,6 +186,16 @@ class LockConnectionHelper {
           bleNotifier.endConnecting();
         }
         return false;
+      }
+
+      // AES rotation first; password rotation is best-effort after the new cipher.
+      final provisioned =
+          await BleService.ensureProvisionedCredentials(deviceId);
+      if (!provisioned) {
+        BleDebugLog.error(
+          'AES key provisioning incomplete for $deviceId — '
+          'continuing with stored credentials',
+        );
       }
 
       sessionEstablished = true;
@@ -287,6 +302,34 @@ class LockConnectionHelper {
   }) async {
     BleConnectionMonitor.stopMonitoring();
     return false;
+  }
+
+  /// Restores the padlock AES key to factory default over BLE, then wipes
+  /// local credentials only after `07 03 01 00`. [force] skips the hardware
+  /// command (unreachable lock).
+  static Future<LockHardwareResetResult> removeLock({
+    required String deviceId,
+    required Future<void> Function() wipeLocal,
+    bool force = false,
+  }) async {
+    if (force) {
+      BleDebugLog.ble(
+        'Force-removing $deviceId without hardware factory reset',
+      );
+      if (BleService.isDeviceConnected(deviceId)) {
+        await BleService.releaseOnDemandConnection(deviceId);
+      }
+      BleService.clearDeviceCredentials(deviceId);
+      await wipeLocal();
+      return LockHardwareResetResult.success;
+    }
+
+    final result = await BleService.factoryResetLock(deviceId);
+    if (result == LockHardwareResetResult.success) {
+      BleService.clearDeviceCredentials(deviceId);
+      await wipeLocal();
+    }
+    return result;
   }
 
   static Future<bool> unlockPreConnectedLock(

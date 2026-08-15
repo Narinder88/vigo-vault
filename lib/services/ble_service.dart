@@ -5,12 +5,19 @@ import 'package:fitness_snack_lock/services/ble_debug_log.dart';
 import 'package:fitness_snack_lock/services/data_service.dart';
 import 'package:fitness_snack_lock/services/pairing_service.dart';
 import 'package:fitness_snack_lock/services/paired_lock_storage.dart';
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/foundation.dart' show kDebugMode, kIsWeb;
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 
 /// Phone foreground unlock uses the original build-195 BLE write/connect profile.
 /// Watch bridge unlock uses tuned GATT lifecycle, delays, and write parameters.
 enum _BleUnlockProfile { phone, watch }
+
+/// Result of restoring the lock's AES master key to the factory default.
+enum LockHardwareResetResult {
+  success,
+  rejected,
+  unreachable,
+}
 
 class BleService {
   static String currentEncryptKey = DataRequestPattern.defaultEncryptKey;
@@ -18,6 +25,7 @@ class BleService {
   static String? _activeDeviceId;
   static final Map<String, String> _deviceTokens = {};
   static final Map<String, String> _deviceEncryptKeys = {};
+  static final Map<String, String> _devicePasswords = {};
   static final Map<String, bool> _deviceUnlockedThisSession = {};
   static final Map<String, StreamSubscription<List<int>>?>
       _handshakeNotifySubscriptions = {};
@@ -66,9 +74,22 @@ class BleService {
 
   static void clearRequiresClaiming(String deviceId) {}
 
+  static const String _provisionStageToken = 'Token';
+  static const String _provisionStagePassword = 'Password Rotation';
+  static const String _provisionStageKey = 'Key Rotation';
+  static const String _provisionStagePersist = 'Persist New Credentials';
+  static const String _provisionStageReset = 'Factory Reset';
+
   static void _logHandshake(String message) {
     print('BLE Handshake: $message');
     BleDebugLog.ble(message);
+  }
+
+  static void _logProvisioning(String stage, String message) {
+    if (!kDebugMode) return;
+    final line = '[$stage] $message';
+    print('BLE Provisioning: $line');
+    BleDebugLog.ble('Provisioning $line');
   }
 
   static void _logUnlock(String message) {
@@ -602,14 +623,25 @@ class BleService {
     currentEncryptKey = encryptKey.toLowerCase();
   }
 
+  static void cacheDevicePassword(String deviceId, String passwordHex) {
+    _devicePasswords[deviceId] =
+        PairedLockStorage.sanitizePasswordHex(passwordHex);
+  }
+
+  /// Drops in-memory credentials after unpair so the next add uses factory fallback.
+  static void clearDeviceCredentials(String deviceId) {
+    _deviceEncryptKeys.remove(deviceId);
+    _devicePasswords.remove(deviceId);
+    currentEncryptKey = DataRequestPattern.defaultEncryptKey;
+    _resetHandshakeState(deviceId);
+  }
+
   static void _resetHandshakeState(String deviceId) {
     _deviceTokens.remove(deviceId);
-    _deviceEncryptKeys.remove(deviceId);
     _deviceUnlockedThisSession.remove(deviceId);
     if (_activeDeviceId == deviceId) {
       _activeDeviceId = null;
     }
-    currentEncryptKey = DataRequestPattern.defaultEncryptKey;
     unawaited(_cancelHandshakeSubscriptions(deviceId));
   }
 
@@ -629,6 +661,8 @@ class BleService {
   static const Duration _streamResponseTimeout = Duration(seconds: 2);
   static const Duration _handshakeTimeout = Duration(seconds: 3);
   static const Duration _handshakeNotifyTimeout = Duration(seconds: 3);
+  static const Duration _factoryResetNotifyTimeout =
+      Duration(milliseconds: 3500);
   static const Duration _unlockGattConnectTimeout = Duration(seconds: 12);
   static const Duration _unlockHandshakeTimeout = Duration(seconds: 5);
   static const Duration _unlockWriteTimeout = Duration(seconds: 5);
@@ -636,6 +670,10 @@ class BleService {
   static const Duration _iosNotifyEnableDelay = Duration(milliseconds: 200);
   static const Duration _postHandshakeUnlockDelay = Duration(milliseconds: 300);
   static const Duration _batteryReadTimeout = Duration(seconds: 3);
+  static const Duration _passwordRotationInterFrameDelay =
+      Duration(milliseconds: 1100);
+  static const Duration _aesKeyRotationInterFrameDelay =
+      Duration(milliseconds: 200);
   static const List<int> _discreteBatteryLevels = [0, 20, 40, 60, 80, 100];
 
   static bool get _isIosBle => !kIsWeb && Platform.isIOS;
@@ -659,11 +697,38 @@ class BleService {
     return DataRequestPattern.defaultEncryptKey.toLowerCase();
   }
 
+  static String _handshakeKeyLabel(String encryptKey) {
+    return PairedLockStorage.isFactoryAesKey(encryptKey) ? 'Factory' : 'Custom';
+  }
+
+  static List<int> _passwordBytesFor(String deviceId) {
+    final cached = _devicePasswords[deviceId];
+    if (cached != null && PairedLockStorage.isValidPasswordHex(cached)) {
+      return DataRequestPattern.passwordBytesFromHex(cached);
+    }
+    return DataRequestPattern.defaultPasswordBytes;
+  }
+
+  /// Loads stored custom credentials, or factory AES key / password when none exist.
+  static Future<void> _primeHandshakeCredentials(String deviceId) async {
+    final encryptKey = await PairedLockStorage.ensureSecretKey(deviceId);
+    cacheDeviceEncryptKey(deviceId, encryptKey);
+    final passwordHex = await PairedLockStorage.ensurePassword(deviceId);
+    cacheDevicePassword(deviceId, passwordHex);
+    _logHandshake(
+      'Handshake credentials for $deviceId: '
+      '${_handshakeKeyLabel(encryptKey)} AES '
+      '(${encryptKey.substring(0, 8)}...), '
+      '${PairedLockStorage.isFactoryPassword(passwordHex) ? 'Factory' : 'Custom'} password',
+    );
+  }
+
   /// Loads the AES master key from secure storage before any handshake/unlock.
   static Future<String> _loadCredentialsForUnlock(String deviceId) async {
     await PairingService.ensurePairedForUnlock(deviceId);
 
-    final encryptKey = await PairedLockStorage.ensureSecretKey(deviceId);
+    await _primeHandshakeCredentials(deviceId);
+    final encryptKey = _handshakeEncryptKey(deviceId);
     if (!PairedLockStorage.isValidAesKeyHex(encryptKey)) {
       _logHandshake('ERROR: AES master key unavailable for $deviceId');
       throw LockAuthenticationException(
@@ -673,14 +738,11 @@ class BleService {
       );
     }
 
-    cacheDeviceEncryptKey(deviceId, encryptKey);
     _logHandshake(
       'Loaded AES master key for $deviceId (${encryptKey.substring(0, 8)}...)',
     );
     return encryptKey;
   }
-
-  static const String _handshakeKeyLabel = 'Default';
 
   static Future<String> _resolveEncryptKey(String deviceId) async {
     final cached = _deviceEncryptKeys[deviceId];
@@ -689,6 +751,7 @@ class BleService {
       return cached;
     }
 
+    await _primeHandshakeCredentials(deviceId);
     final key = _handshakeEncryptKey(deviceId);
     currentEncryptKey = key;
     return key;
@@ -1051,7 +1114,8 @@ class BleService {
       return (
         token: token,
         decryptKeyLabel: decryptKeyLabel,
-        usedDefaultKey: decryptKeyLabel == 'Default',
+        usedDefaultKey:
+            decryptKeyLabel == 'Factory' || decryptKeyLabel == 'Default',
       );
     }
 
@@ -1070,8 +1134,9 @@ class BleService {
       }
     }
 
+    await _primeHandshakeCredentials(deviceId);
     final encryptKey = _handshakeEncryptKey(deviceId);
-    const keyLabel = _handshakeKeyLabel;
+    final keyLabel = _handshakeKeyLabel(encryptKey);
     _logHandshake(
       'Starting token request for $deviceId with $keyLabel key '
       '(${encryptKey.substring(0, 8)}...)',
@@ -1564,6 +1629,7 @@ class BleService {
     String deviceId, {
     bool backgroundWarmup = false,
     Duration handshakeTimeout = _handshakeTimeout,
+    bool skipProvisioning = false,
   }) async {
     StreamSubscription<BluetoothConnectionState>? connectionSubscription;
     var reachedConnectedState = false;
@@ -1616,6 +1682,30 @@ class BleService {
       }
 
       _deviceTokens[deviceId] = token!;
+      _logProvisioning(
+        _provisionStageToken,
+        'Session token acquired for $deviceId ($token)',
+      );
+
+      if (!skipProvisioning) {
+        final provisioned = await ensureProvisionedCredentials(deviceId);
+        if (!provisioned) {
+          final paired = await PairedLockStorage.isPaired(deviceId);
+          if (!paired) {
+            _logProvisioning(
+              _provisionStageKey,
+              'Provisioning failed for unpaired lock $deviceId — aborting connect',
+            );
+            await _safeDisconnect(device);
+            return false;
+          }
+          _logProvisioning(
+            _provisionStageKey,
+            'Provisioning failed for paired lock $deviceId — continuing with stored credentials',
+          );
+        }
+      }
+
       _activeDeviceId = deviceId;
 
       connected = true;
@@ -1773,6 +1863,8 @@ class BleService {
     String? encryptKeyOverride,
     String? debugLabel,
     Duration timeout = _handshakeNotifyTimeout,
+    bool Function(List<int> decrypted)? isValidFrame,
+    bool allowStaleLastValueFallback = true,
   }) async {
     final device = BluetoothDevice.fromId(deviceId);
     final sessionCharacteristics = await _resolveHandshakeCharacteristics(device);
@@ -1788,18 +1880,43 @@ class BleService {
         encryptKeyOverride ?? await _resolveEncryptKey(deviceId);
     StreamSubscription<List<int>>? subscription;
     try {
-      await notifyCharacteristic.setNotifyValue(true).timeout(_handshakeTimeout);
-      await _flushStaleNotifyBuffer(notifyCharacteristic);
       final previousValue = List<int>.from(notifyCharacteristic.lastValue);
-
       final completer = Completer<List<int>>();
+      var acceptNotifies = false;
+
+      bool isFreshNotify(List<int> value) {
+        if (value.isEmpty) return false;
+        if (_bytesEqual(value, previousValue)) return false;
+        if (isValidFrame == null) return true;
+        final decrypted = DataService.tryDecryptNotifyCandidates(
+          value,
+          [resolvedEncryptKey],
+          isValidFrame: isValidFrame,
+        );
+        return decrypted != null;
+      }
+
+      await notifyCharacteristic.setNotifyValue(true).timeout(_handshakeTimeout);
       subscription = notifyCharacteristic.onValueReceived.listen((value) {
-        if (value.isEmpty || completer.isCompleted) {
+        if (!acceptNotifies || completer.isCompleted) {
+          return;
+        }
+        if (!isFreshNotify(value)) {
+          _logUnlock(
+            '${debugLabel ?? 'command'}: ignoring stale or unmatched 36F6 notify '
+            '(${value.length} bytes)',
+          );
           return;
         }
         completer.complete(List<int>.from(value));
       });
 
+      await _flushStaleNotifyBuffer(notifyCharacteristic);
+      _logUnlock(
+        '${debugLabel ?? 'command'}: 36F6 subscribed and flushed before write',
+      );
+
+      acceptNotifies = true;
       await _writeEncryptedFrame(
         deviceId,
         payload,
@@ -1809,7 +1926,8 @@ class BleService {
         debugLabel: debugLabel,
       );
       _logUnlock(
-        '${debugLabel ?? 'command'}: 36F6 listening for first post-write notify',
+        '${debugLabel ?? 'command'}: 36F6 listening for first post-write notify '
+        '(${timeout.inMilliseconds}ms)',
       );
 
       var response = await completer.future.timeout(
@@ -1817,7 +1935,7 @@ class BleService {
         onTimeout: () => <int>[],
       );
 
-      if (response.isEmpty) {
+      if (response.isEmpty && allowStaleLastValueFallback) {
         _logUnlock(
           '${debugLabel ?? 'command'}: no 36F6 notify — trying read/lastValue fallback',
         );
@@ -1830,7 +1948,15 @@ class BleService {
 
         if (response.isEmpty) {
           try {
-            response = await _readLockCharacteristic(notifyCharacteristic);
+            final readValue =
+                await _readLockCharacteristic(notifyCharacteristic);
+            if (isFreshNotify(readValue)) {
+              response = readValue;
+            } else if (readValue.isNotEmpty) {
+              _logUnlock(
+                '${debugLabel ?? 'command'}: ignoring stale 36F6 lastValue/read',
+              );
+            }
           } catch (_) {}
         }
 
@@ -1844,6 +1970,12 @@ class BleService {
         _logUnlock(
           '${debugLabel ?? 'command'}: got 36F6 response via read/lastValue fallback',
         );
+      } else if (response.isEmpty) {
+        _logUnlock(
+          '${debugLabel ?? 'command'}: no fresh 36F6 notify within '
+          '${timeout.inMilliseconds}ms — not using stale lastValue',
+        );
+        return response;
       }
 
       _logLockResponse(
@@ -1864,6 +1996,8 @@ class BleService {
     String? encryptKeyOverride,
     String? debugLabel,
     Duration timeout = _handshakeNotifyTimeout,
+    bool Function(List<int> decrypted)? isValidFrame,
+    bool allowStaleLastValueFallback = true,
   }) async {
     return _readPostWriteLockResponse(
       deviceId,
@@ -1871,7 +2005,386 @@ class BleService {
       encryptKeyOverride: encryptKeyOverride,
       debugLabel: debugLabel,
       timeout: timeout,
+      isValidFrame: isValidFrame,
+      allowStaleLastValueFallback: allowStaleLastValueFallback,
     );
+  }
+
+  static Future<void> _sendLockCommandNoResponse(
+    String deviceId,
+    String payload, {
+    String? encryptKeyOverride,
+    String? debugLabel,
+    int writeTimeout = 3,
+  }) async {
+    await _writeDataInternal(
+      deviceId,
+      payload,
+      ignoreEncryption: false,
+      writeTimeout: writeTimeout,
+      encryptKeyOverride: encryptKeyOverride,
+      debugLabel: debugLabel,
+    );
+  }
+
+  /// Rotates the AES master key first, then the password, after a `06 02` token.
+  /// Returns true when a custom AES key is already stored or `07 03 01 00`
+  /// confirms rotation. Password failure is logged only — the AES key is kept.
+  static Future<bool> ensureProvisionedCredentials(String deviceId) async {
+    final token = _deviceTokens[deviceId];
+    if (_isInvalidToken(token)) {
+      _logProvisioning(
+        _provisionStageToken,
+        'Cannot provision $deviceId — session token missing',
+      );
+      return false;
+    }
+
+    await _primeHandshakeCredentials(deviceId);
+
+    var aesReady = await PairedLockStorage.hasCustomAesKey(deviceId);
+    if (aesReady) {
+      _logProvisioning(
+        _provisionStageToken,
+        'Lock $deviceId already has a custom AES key — skipping AES rotation',
+      );
+    } else {
+      _logProvisioning(
+        _provisionStageToken,
+        'Factory credentials in use for $deviceId — rotating AES key first',
+      );
+      aesReady = await _rotateLockAesKey(
+        deviceId,
+        token: token!,
+        encryptKey: _handshakeEncryptKey(deviceId),
+      );
+      if (!aesReady) {
+        return false;
+      }
+    }
+
+    if (await PairedLockStorage.hasCustomPassword(deviceId)) {
+      _logProvisioning(
+        _provisionStagePassword,
+        'Custom password already stored for $deviceId — skipping password rotation',
+      );
+      return true;
+    }
+
+    final activeCipher = _handshakeEncryptKey(deviceId);
+    _logProvisioning(
+      _provisionStagePassword,
+      'Attempting password rotation with active cipher '
+      '(${activeCipher.substring(0, 8)}...)',
+    );
+    final passwordRotated = await _rotateLockPassword(
+      deviceId,
+      token: token!,
+      encryptKey: activeCipher,
+    );
+    if (!passwordRotated) {
+      _logProvisioning(
+        _provisionStagePassword,
+        'Password rotation failed for $deviceId — AES key was not reverted',
+      );
+    }
+    return true;
+  }
+
+  static Future<bool> _rotateLockPassword(
+    String deviceId, {
+    required String token,
+    required String encryptKey,
+  }) async {
+    _logProvisioning(
+      _provisionStagePassword,
+      'Sending 05 03 (old password) for $deviceId',
+    );
+
+    try {
+      final oldPassword = _passwordBytesFor(deviceId);
+      await _sendLockCommandNoResponse(
+        deviceId,
+        DataRequestPattern.getPasswordVerifyHex(
+          token,
+          oldPasswordBytes: oldPassword,
+        ),
+        encryptKeyOverride: encryptKey,
+        debugLabel: 'password-verify 05 03',
+      );
+
+      _logProvisioning(
+        _provisionStagePassword,
+        'Waiting ${_passwordRotationInterFrameDelay.inMilliseconds}ms before 05 04',
+      );
+      await Future<void>.delayed(_passwordRotationInterFrameDelay);
+
+      final newPassword = DataRequestPattern.generatePasswordBytes();
+      _logProvisioning(
+        _provisionStagePassword,
+        'Sending 05 04 (new password) for $deviceId',
+      );
+      final response = await _sendLockCommandAndReadResponse(
+        deviceId,
+        DataRequestPattern.getPasswordSetHex(token, newPassword),
+        encryptKeyOverride: encryptKey,
+        debugLabel: 'password-set 05 04',
+      );
+
+      final decrypted = await _decryptLockResponse(
+        deviceId,
+        response,
+        encryptKey: encryptKey,
+        isValidFrame: DataRequestPattern.isPasswordRotationSuccess,
+      );
+      if (!DataRequestPattern.isPasswordRotationSuccess(decrypted ?? const [])) {
+        _logProvisioning(
+          _provisionStagePassword,
+          'Password rotation failed for $deviceId — RET != 00 or missing 05 05',
+        );
+        return false;
+      }
+
+      final passwordHex = DataRequestPattern.passwordBytesToHex(newPassword);
+      await _persistPassword(deviceId, passwordHex);
+      _logProvisioning(
+        _provisionStagePassword,
+        'Password rotation succeeded for $deviceId (05 05 01 00)',
+      );
+      return true;
+    } catch (error) {
+      _logProvisioning(
+        _provisionStagePassword,
+        'Password rotation interrupted for $deviceId: $error',
+      );
+      return false;
+    }
+  }
+
+  static Future<bool> _rotateLockAesKey(
+    String deviceId, {
+    required String token,
+    required String encryptKey,
+  }) async {
+    _logProvisioning(
+      _provisionStageKey,
+      'Generating new AES-128 key for $deviceId',
+    );
+    final newAesKeyHex = DataRequestPattern.generateAesKeyHex();
+
+    try {
+      _logProvisioning(
+        _provisionStageKey,
+        'Sending 07 01 (KEYL) encrypted with current AES key',
+      );
+      await _sendLockCommandNoResponse(
+        deviceId,
+        DataRequestPattern.getAesKeyLowHex(token, newAesKeyHex),
+        encryptKeyOverride: encryptKey,
+        debugLabel: 'aes-key-low 07 01',
+      );
+
+      await Future<void>.delayed(_aesKeyRotationInterFrameDelay);
+
+      _logProvisioning(
+        _provisionStageKey,
+        'Sending 07 02 (KEYH) encrypted with current AES key',
+      );
+      final response = await _sendLockCommandAndReadResponse(
+        deviceId,
+        DataRequestPattern.getAesKeyHighHex(token, newAesKeyHex),
+        encryptKeyOverride: encryptKey,
+        debugLabel: 'aes-key-high 07 02',
+      );
+
+      final decrypted = await _decryptLockResponse(
+        deviceId,
+        response,
+        encryptKey: encryptKey,
+        isValidFrame: DataRequestPattern.isAesKeyRotationSuccess,
+      );
+      if (!DataRequestPattern.isAesKeyRotationSuccess(decrypted ?? const [])) {
+        _logProvisioning(
+          _provisionStageKey,
+          'AES key rotation failed for $deviceId — RET != 00 or missing 07 03; '
+          'stored key was not overwritten',
+        );
+        return false;
+      }
+
+      await _persistAesKey(deviceId, newAesKeyHex);
+      _logProvisioning(
+        _provisionStageKey,
+        'AES key rotation succeeded for $deviceId (07 03 01 00) — cipher switched',
+      );
+      return true;
+    } catch (error) {
+      _logProvisioning(
+        _provisionStageKey,
+        'AES key rotation interrupted for $deviceId: $error — stored key was not overwritten',
+      );
+      return false;
+    }
+  }
+
+  static Future<void> _persistPassword(
+    String deviceId,
+    String passwordHex,
+  ) async {
+    _logProvisioning(
+      _provisionStagePersist,
+      'Saving new 6-byte password for $deviceId',
+    );
+    await PairedLockStorage.savePassword(deviceId, passwordHex);
+    cacheDevicePassword(deviceId, passwordHex);
+    await PairedLockStorage.syncLockToWatch(deviceId);
+  }
+
+  static Future<void> _persistAesKey(String deviceId, String aesKeyHex) async {
+    _logProvisioning(
+      _provisionStagePersist,
+      'Saving new 16-byte AES key for $deviceId and switching cipher context',
+    );
+    await PairedLockStorage.saveSecretKey(deviceId, aesKeyHex);
+    cacheDeviceEncryptKey(deviceId, aesKeyHex);
+    await PairedLockStorage.syncLockToWatch(deviceId);
+  }
+
+  /// Writes factory KEYL/KEYH (`07 01` / `07 02`) encrypted with [encryptKey]
+  /// (the active custom key). Does not persist the factory key locally.
+  static Future<bool> _restoreFactoryAesKey(
+    String deviceId, {
+    required String token,
+    required String encryptKey,
+  }) async {
+    const factoryKey = DataRequestPattern.defaultEncryptKey;
+    _logProvisioning(
+      _provisionStageReset,
+      'Restoring factory AES KEYL/KEYH for $deviceId encrypted with '
+      '${_handshakeKeyLabel(encryptKey)} key',
+    );
+
+    try {
+      await _sendLockCommandNoResponse(
+        deviceId,
+        DataRequestPattern.getAesKeyLowHex(token, factoryKey),
+        encryptKeyOverride: encryptKey,
+        debugLabel: 'factory-aes-low 07 01',
+      );
+
+      await Future<void>.delayed(_aesKeyRotationInterFrameDelay);
+
+      final response = await _sendLockCommandAndReadResponse(
+        deviceId,
+        DataRequestPattern.getAesKeyHighHex(token, factoryKey),
+        encryptKeyOverride: encryptKey,
+        debugLabel: 'factory-aes-high 07 02',
+        timeout: _factoryResetNotifyTimeout,
+        isValidFrame: DataRequestPattern.isAesKeyRotationSuccess,
+        allowStaleLastValueFallback: false,
+      );
+
+      final decrypted = await _decryptLockResponse(
+        deviceId,
+        response,
+        encryptKey: encryptKey,
+        isValidFrame: DataRequestPattern.isAesKeyRotationSuccess,
+      );
+      if (!DataRequestPattern.isAesKeyRotationSuccess(decrypted ?? const [])) {
+        _logProvisioning(
+          _provisionStageReset,
+          'Factory AES restore failed for $deviceId — RET != 00 or missing 07 03',
+        );
+        return false;
+      }
+
+      _logProvisioning(
+        _provisionStageReset,
+        'Factory AES restore succeeded for $deviceId (07 03 01 00)',
+      );
+      return true;
+    } catch (error) {
+      _logProvisioning(
+        _provisionStageReset,
+        'Factory AES restore interrupted for $deviceId: $error',
+      );
+      return false;
+    }
+  }
+
+  /// Connects with the active AES key, acquires a session token, then writes
+  /// the factory AES key via `07 01`/`07 02`. Local credentials are not deleted
+  /// here — wipe only after `07 03 01 00`.
+  static Future<LockHardwareResetResult> factoryResetLock(String deviceId) async {
+    if (deviceId.isEmpty) return LockHardwareResetResult.unreachable;
+
+    await forceCleanDisconnectBeforeUnlock(deviceId);
+    return runExclusive(() async {
+      var reachedCommand = false;
+      try {
+        await _primeHandshakeCredentials(deviceId);
+
+        final connected = await _attemptConnect(
+          deviceId,
+          handshakeTimeout: _unlockHandshakeTimeout,
+          skipProvisioning: true,
+        );
+        if (!connected) {
+          _logProvisioning(
+            _provisionStageReset,
+            'Lock $deviceId unreachable — cannot restore factory AES key',
+          );
+          return LockHardwareResetResult.unreachable;
+        }
+
+        final token = _deviceTokens[deviceId];
+        if (_isInvalidToken(token)) {
+          _logProvisioning(
+            _provisionStageReset,
+            'Lock $deviceId connected but no session token — treating as unreachable',
+          );
+          return LockHardwareResetResult.unreachable;
+        }
+
+        final encryptKey = _handshakeEncryptKey(deviceId);
+        _logProvisioning(
+          _provisionStageReset,
+          'Restoring factory AES key for $deviceId after 06 02 '
+          '(encrypting 07 01/07 02 with ${_handshakeKeyLabel(encryptKey)} key)',
+        );
+        reachedCommand = true;
+
+        final factoryKeyRestored = await _restoreFactoryAesKey(
+          deviceId,
+          token: token!,
+          encryptKey: encryptKey,
+        );
+        if (!factoryKeyRestored) {
+          _logProvisioning(
+            _provisionStageReset,
+            'Factory AES key was not confirmed for $deviceId — '
+            'local keys will not be deleted',
+          );
+          return LockHardwareResetResult.rejected;
+        }
+
+        _logProvisioning(
+          _provisionStageReset,
+          'Factory AES restore complete for $deviceId (07 03 01 00)',
+        );
+        return LockHardwareResetResult.success;
+      } catch (error) {
+        _logProvisioning(
+          _provisionStageReset,
+          'Factory AES restore failed for $deviceId: $error',
+        );
+        return reachedCommand
+            ? LockHardwareResetResult.rejected
+            : LockHardwareResetResult.unreachable;
+      } finally {
+        await _releaseOnDemandConnectionInternal(deviceId);
+      }
+    });
   }
 
   static Future<bool> requestToUnlock(
@@ -2104,9 +2617,16 @@ class BleService {
       );
     }
 
-    final unlockFrame = DataRequestPattern.getUnlockHex(token);
+    final passwordBytes = _passwordBytesFor(deviceId);
+    final unlockFrame = DataRequestPattern.getUnlockHex(
+      token,
+      passwordBytes: passwordBytes,
+    );
     _logUnlock(
-      'Unlocking $deviceId — ${DataRequestPattern.describeUnlockFrame(token)}',
+      'Unlocking $deviceId — ${DataRequestPattern.describeUnlockFrame(
+        token,
+        passwordBytes: passwordBytes,
+      )}',
     );
     final response = await _sendLockCommandAndReadResponse(
       deviceId,

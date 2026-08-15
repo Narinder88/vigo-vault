@@ -82,6 +82,7 @@ class UnlockViewModel(application: Application) : AndroidViewModel(application) 
                 val result = bleClient.connectAndUnlock(
                     macAddress = config.macAddress,
                     secretKey = config.secretKey,
+                    passwordHex = config.passwordHex,
                 )
             ) {
                 is LockBleClient.UnlockResult.Success -> {

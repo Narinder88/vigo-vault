@@ -1,4 +1,5 @@
 import 'package:fitness_snack_lock/models/saved_lock.dart';
+import 'package:fitness_snack_lock/services/ble_service.dart';
 import 'package:fitness_snack_lock/services/pairing_service.dart';
 import 'package:fitness_snack_lock/services/paired_lock_storage.dart';
 import 'package:fitness_snack_lock/services/saved_lock_storage.dart';
@@ -260,6 +261,7 @@ class SavedLocksNotifier extends StateNotifier<SavedLocksState> {
 
   Future<void> removeLock(String lockId) async {
     await PairingService.unpairLock(lockId);
+    BleService.clearDeviceCredentials(lockId);
     await SavedLockStorage.removeLock(lockId);
 
     final locks =

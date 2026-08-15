@@ -268,9 +268,14 @@ class _HomePageState extends ConsumerState<HomePage>
   }
 
   void _stopUnlockAnimation() {
-    _pulseController.stop();
+    if (!mounted) return;
+    if (_pulseController.isAnimating) {
+      _pulseController.stop();
+    }
     _pulseController.reset();
-    _spinController.stop();
+    if (_spinController.isAnimating) {
+      _spinController.stop();
+    }
     _spinController.reset();
   }
 
@@ -306,8 +311,8 @@ class _HomePageState extends ConsumerState<HomePage>
         ),
       );
     } finally {
-      _stopUnlockAnimation();
       if (mounted) {
+        _stopUnlockAnimation();
         setState(() => _isUnlocking = false);
       }
     }
@@ -466,13 +471,12 @@ class _HomePageState extends ConsumerState<HomePage>
 
     ref.listen(lockUnlockEventProvider, (previous, next) {
       if (previous == next) return;
+      if (!mounted) return;
       _stopUnlockAnimation();
-      if (mounted) {
-        setState(() {
-          _isUnlocked = true;
-          _isUnlocking = false;
-        });
-      }
+      setState(() {
+        _isUnlocked = true;
+        _isUnlocking = false;
+      });
     });
 
     return SmartLockConnector(

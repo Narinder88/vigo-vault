@@ -29,6 +29,7 @@ class LockBleClient(
     suspend fun connectAndUnlock(
         macAddress: String,
         secretKey: String,
+        passwordHex: String = LockProtocol.DEFAULT_PASSWORD_HEX,
     ): UnlockResult {
         val adapter = BluetoothAdapter.getDefaultAdapter()
             ?: return UnlockResult.Failure("Bluetooth unavailable")
@@ -64,7 +65,14 @@ class LockBleClient(
                 encryptKey,
             ) ?: return UnlockResult.Failure(HANDSHAKE_FAILED_MESSAGE)
 
-            writeUnlock(session, writeCharacteristic, notifyCharacteristic, token, encryptKey)
+            writeUnlock(
+                session,
+                writeCharacteristic,
+                notifyCharacteristic,
+                token,
+                encryptKey,
+                passwordHex,
+            )
         } catch (error: TimeoutCancellationException) {
             Log.e(TAG, "Unlock timed out", error)
             UnlockResult.Failure(CONNECT_TIMEOUT_MESSAGE)
@@ -114,8 +122,12 @@ class LockBleClient(
         notifyCharacteristic: BluetoothGattCharacteristic,
         token: String,
         encryptKey: String,
+        passwordHex: String,
     ): UnlockResult {
-        val unlockFrameHex = LockProtocol.unlockFrameHex(token)
+        val unlockFrameHex = LockProtocol.unlockFrameHex(
+            token,
+            passwordHex = passwordHex,
+        )
         val response = session.writeEncryptedAndAwaitNotify(
             writeCharacteristic = writeCharacteristic,
             notifyCharacteristic = notifyCharacteristic,

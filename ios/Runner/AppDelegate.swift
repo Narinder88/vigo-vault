@@ -108,6 +108,46 @@ import UIKit
         }
         result(storage.hasSecretKey(deviceId: deviceId))
 
+      case "getPassword":
+        guard let args = call.arguments as? [String: Any],
+              let deviceId = args["deviceId"] as? String,
+              !deviceId.isEmpty else {
+          result(FlutterError(code: "invalid_argument", message: "deviceId is required", details: nil))
+          return
+        }
+        result(storage.getPassword(deviceId: deviceId))
+
+      case "savePassword":
+        guard let args = call.arguments as? [String: Any],
+              let deviceId = args["deviceId"] as? String,
+              let password = args["password"] as? String,
+              !deviceId.isEmpty,
+              !password.isEmpty else {
+          result(FlutterError(code: "invalid_argument", message: "deviceId and password are required", details: nil))
+          return
+        }
+        storage.savePassword(deviceId: deviceId, password: password)
+        result(nil)
+
+      case "removePassword":
+        guard let args = call.arguments as? [String: Any],
+              let deviceId = args["deviceId"] as? String,
+              !deviceId.isEmpty else {
+          result(FlutterError(code: "invalid_argument", message: "deviceId is required", details: nil))
+          return
+        }
+        storage.removePassword(deviceId: deviceId)
+        result(nil)
+
+      case "hasPassword":
+        guard let args = call.arguments as? [String: Any],
+              let deviceId = args["deviceId"] as? String,
+              !deviceId.isEmpty else {
+          result(FlutterError(code: "invalid_argument", message: "deviceId is required", details: nil))
+          return
+        }
+        result(storage.hasPassword(deviceId: deviceId))
+
       default:
         result(FlutterMethodNotImplemented)
       }
