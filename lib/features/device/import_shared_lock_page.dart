@@ -97,8 +97,8 @@ class _ImportSharedLockPageState extends ConsumerState<ImportSharedLockPage> {
       final messenger = ScaffoldMessenger.of(context);
       final navigator = Navigator.of(context);
       messenger.showSnackBar(
-        const SnackBar(
-          content: Text('Lock imported successfully'),
+        SnackBar(
+          content: Text('${invite.savedDisplayName} imported successfully'),
           behavior: SnackBarBehavior.floating,
         ),
       );

@@ -330,9 +330,13 @@ class SavedLocksNotifier extends StateNotifier<SavedLocksState> {
     final lock = (existing ??
             SavedLock(
               id: id,
-              displayName: invite.name,
+              displayName: invite.savedDisplayName,
+              hardwareName: invite.name,
             ))
-        .copyWith(displayName: invite.name);
+        .copyWith(
+          displayName: invite.savedDisplayName,
+          hardwareName: invite.name,
+        );
 
     await addOrUpdateLock(lock);
 
@@ -363,7 +367,7 @@ class SavedLocksNotifier extends StateNotifier<SavedLocksState> {
 
     final lock = SavedLock(
       id: connectId,
-      displayName: invite.name,
+      displayName: invite.savedDisplayName,
       hardwareName: invite.name,
     );
     _publishLock(lock);

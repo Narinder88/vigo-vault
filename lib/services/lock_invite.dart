@@ -9,23 +9,38 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 class LockInvite {
   const LockInvite({
     required this.name,
+    required this.displayName,
     required this.macAddress,
     required this.aesKey,
     required this.password,
   });
 
+  /// Padlock BLE advertised name, for example `BR38`.
   final String name;
+
+  /// User-facing nickname, for example `Fridge`. Falls back to [name].
+  final String displayName;
   final String macAddress;
   final String aesKey;
   final String password;
 
+  /// Nickname shown in the lock list. Older invites omit [displayName].
+  String get savedDisplayName {
+    final custom = displayName.trim();
+    if (custom.isNotEmpty) return custom;
+    return name;
+  }
+
   static const int version = 1;
 
-  /// UTF-8 JSON `{ v, name, mac, macAddress, aesKey, password }` encoded as Base64.
+  /// UTF-8 JSON `{ v, name, displayName, mac, macAddress, aesKey, password }`
+  /// encoded as Base64.
   ///
-  /// Android always writes the lock's real remoteId MAC. iOS writes an empty
-  /// `mac` because CoreBluetooth has no hardware address. The manufacturer-data
-  /// placeholder [LockMac.placeholderMac] is never written.
+  /// [name] is always the advertised BLE name so fee7 discovery can match it.
+  /// [displayName] is the custom nickname. Android writes the real remoteId
+  /// MAC. iOS writes an empty `mac` because CoreBluetooth has no hardware
+  /// address. The manufacturer-data placeholder [LockMac.placeholderMac] is
+  /// never written.
   static Future<({String code, SavedLock lock})?> encode(SavedLock lock) async {
     final credentialId = lock.id.trim();
     if (credentialId.isEmpty) return null;
@@ -46,10 +61,13 @@ class LockInvite {
 
     final name = _advertisedName(lock);
     if (name.isEmpty) return null;
+    final customName = lock.displayName.trim();
+    final displayName = customName.isEmpty ? name : customName;
 
     final payload = jsonEncode({
       'v': version,
       'name': name,
+      'displayName': displayName,
       'mac': mac,
       'macAddress': mac,
       'aesKey': aesKey,
@@ -139,14 +157,24 @@ class LockInvite {
       );
     }
 
+    final displayName = _readDisplayName(json, name);
+
     return LockInviteParseResult.success(
       LockInvite(
         name: name,
+        displayName: displayName,
         macAddress: macAddress,
         aesKey: aesKey,
         password: password,
       ),
     );
+  }
+
+  /// Custom nickname when the invite has one. Older codes only have [name].
+  static String _readDisplayName(Map<String, dynamic> json, String name) {
+    final custom = json['displayName']?.toString().trim() ?? '';
+    if (custom.isNotEmpty) return custom;
+    return name;
   }
 
   /// Empty, omitted, or the shared placeholder means "discover by name".
