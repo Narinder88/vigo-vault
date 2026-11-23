@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:fitness_snack_lock/providers/saved_locks_provider.dart';
 import 'package:fitness_snack_lock/services/lock_invite.dart';
 import 'package:flutter/material.dart';
@@ -20,6 +22,7 @@ class _ImportSharedLockPageState extends ConsumerState<ImportSharedLockPage> {
 
   var _scanning = false;
   var _importing = false;
+  var _hasHandledScan = false;
   String? _error;
   String? _status;
 
@@ -30,8 +33,15 @@ class _ImportSharedLockPageState extends ConsumerState<ImportSharedLockPage> {
     super.dispose();
   }
 
-  Future<void> _importRaw(String raw) async {
-    if (_importing) return;
+  void _onDetect(BarcodeCapture capture) {
+    if (_importing || _hasHandledScan) return;
+
+    final raw = capture.barcodes
+        .map((barcode) => barcode.rawValue)
+        .whereType<String>()
+        .where((value) => value.trim().isNotEmpty)
+        .firstOrNull;
+    if (raw == null) return;
 
     final parsed = LockInvite.parse(raw);
     final invite = parsed.invite;
@@ -40,34 +50,83 @@ class _ImportSharedLockPageState extends ConsumerState<ImportSharedLockPage> {
       return;
     }
 
+    _hasHandledScan = true;
+    _importing = true;
+    _codeController.text = raw;
+    unawaited(_runImport(invite, stopScanner: true));
+  }
+
+  void _importPastedCode() {
+    if (_importing || _hasHandledScan) return;
+
+    final parsed = LockInvite.parse(_codeController.text);
+    final invite = parsed.invite;
+    if (invite == null) {
+      setState(() => _error = parsed.error);
+      return;
+    }
+
+    _importing = true;
+    if (_scanning) _hasHandledScan = true;
+    unawaited(_runImport(invite, stopScanner: _scanning));
+  }
+
+  Future<void> _runImport(
+    LockInvite invite, {
+    required bool stopScanner,
+  }) async {
     final discoverByName = invite.macAddress.isEmpty;
     setState(() {
-      _importing = true;
       _error = null;
       _status = discoverByName
           ? 'Looking for a nearby ${invite.name} lock...'
-          : null;
+          : 'Saving...';
     });
+
+    if (stopScanner) {
+      try {
+        await _scannerController.stop();
+      } catch (_) {}
+      if (!mounted) return;
+      setState(() => _scanning = false);
+    }
 
     try {
       await ref.read(savedLocksProvider.notifier).importSharedLock(invite);
       if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Lock imported successfully'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
       Navigator.of(context).pop(true);
     } on SharedLockNotFound catch (error) {
-      if (!mounted) return;
-      setState(() {
-        _importing = false;
-        _status = null;
-        _error = error.message;
-      });
+      await _importFailed(error.message, reopenScanner: stopScanner);
     } catch (_) {
-      if (!mounted) return;
-      setState(() {
-        _importing = false;
-        _status = null;
-        _error = 'Could not save this lock on this phone.';
-      });
+      await _importFailed(
+        'Could not save this lock on this phone.',
+        reopenScanner: stopScanner,
+      );
     }
+  }
+
+  Future<void> _importFailed(
+    String message, {
+    required bool reopenScanner,
+  }) async {
+    if (!mounted) return;
+    setState(() {
+      _importing = false;
+      _hasHandledScan = false;
+      _status = null;
+      _error = message;
+      if (reopenScanner) _scanning = true;
+    });
+    if (!reopenScanner) return;
+    try {
+      await _scannerController.start();
+    } catch (_) {}
   }
 
   @override
@@ -98,9 +157,7 @@ class _ImportSharedLockPageState extends ConsumerState<ImportSharedLockPage> {
           ),
           const SizedBox(height: 12),
           FilledButton(
-            onPressed: _importing
-                ? null
-                : () => _importRaw(_codeController.text),
+            onPressed: _importing ? null : _importPastedCode,
             child: Text(
               _importing ? (_status ?? 'Saving...') : 'Import pasted code',
             ),
@@ -131,16 +188,7 @@ class _ImportSharedLockPageState extends ConsumerState<ImportSharedLockPage> {
                 borderRadius: BorderRadius.circular(12),
                 child: MobileScanner(
                   controller: _scannerController,
-                  onDetect: (capture) {
-                    final raw = capture.barcodes
-                        .map((barcode) => barcode.rawValue)
-                        .whereType<String>()
-                        .where((value) => value.trim().isNotEmpty)
-                        .firstOrNull;
-                    if (raw == null) return;
-                    _codeController.text = raw;
-                    _importRaw(raw);
-                  },
+                  onDetect: _onDetect,
                 ),
               ),
             ),
