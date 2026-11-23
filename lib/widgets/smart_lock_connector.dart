@@ -1,4 +1,5 @@
 import 'package:fitness_snack_lock/providers/ble_provider.dart';
+import 'package:fitness_snack_lock/utils/lock_mac.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -46,11 +47,17 @@ class _SmartLockConnectorState extends ConsumerState<SmartLockConnector> {
   Widget build(BuildContext context) {
     final bleState = ref.watch(bleProvider);
     final providerDevice = bleState.device;
-    final device = providerDevice ??
-        (widget.fallbackDeviceId != null
-            ? BluetoothDevice.fromId(widget.fallbackDeviceId!)
+    final fallbackId = widget.fallbackDeviceId;
+    final providerMatchesFallback = providerDevice != null &&
+        (fallbackId == null ||
+            LockMac.normalize(providerDevice.remoteId.str) ==
+                LockMac.normalize(fallbackId));
+    final device = providerMatchesFallback
+        ? providerDevice
+        : (fallbackId != null
+            ? BluetoothDevice.fromId(fallbackId)
             : null);
-    final batteryLevel = providerDevice != null
+    final batteryLevel = providerMatchesFallback
         ? bleState.batteryLevel
         : (widget.fallbackBatteryLevel ?? 0);
 

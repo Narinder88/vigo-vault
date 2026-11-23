@@ -81,7 +81,7 @@ class _RenameLockDialogState extends State<_RenameLockDialog> {
         autofocus: true,
         style: TextStyle(color: widget.labelColor),
         decoration: InputDecoration(
-          hintText: 'Lock name',
+          hintText: 'Bedroom, Fridge, Freezer',
           hintStyle: TextStyle(
             color: widget.subtextColor.withValues(alpha: 0.8),
           ),

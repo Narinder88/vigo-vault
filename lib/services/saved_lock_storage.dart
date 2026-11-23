@@ -1,6 +1,8 @@
 import 'dart:convert';
 
 import 'package:fitness_snack_lock/models/saved_lock.dart';
+import 'package:fitness_snack_lock/services/paired_lock_storage.dart';
+import 'package:fitness_snack_lock/utils/lock_mac.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class SavedLockStorage {
@@ -16,12 +18,47 @@ class SavedLockStorage {
 
     if (raw != null && raw.isNotEmpty) {
       final decoded = jsonDecode(raw) as List<dynamic>;
-      return decoded
+      final locks = decoded
           .map((entry) => SavedLock.fromJson(entry as Map<String, dynamic>))
           .toList();
+      return _canonicalizeLocks(locks);
     }
 
-    return _migrateLegacyLock(prefs);
+    return _canonicalizeLocks(await _migrateLegacyLock(prefs));
+  }
+
+  static Future<List<SavedLock>> _canonicalizeLocks(List<SavedLock> locks) async {
+    final canonical = <SavedLock>[];
+    var changed = false;
+
+    for (final lock in locks) {
+      final id = LockMac.normalize(lock.id);
+      if (canonical.any((entry) => entry.id == id)) {
+        changed = true;
+        continue;
+      }
+      if (id != lock.id) {
+        changed = true;
+        await PairedLockStorage.migrateDeviceId(lock.id, id);
+      }
+      canonical.add(id == lock.id ? lock : lock.copyWith(id: id));
+    }
+
+    if (changed) {
+      await saveLocks(canonical);
+    }
+    await _canonicalizePointer(_activeLockIdKey);
+    await _canonicalizePointer(_primaryLockIdKey);
+    return canonical;
+  }
+
+  static Future<void> _canonicalizePointer(String key) async {
+    final prefs = await SharedPreferences.getInstance();
+    final value = prefs.getString(key);
+    if (value == null || value.isEmpty) return;
+    final next = LockMac.normalize(value);
+    if (next == value) return;
+    await prefs.setString(key, next);
   }
 
   static Future<List<SavedLock>> _migrateLegacyLock(
@@ -31,8 +68,12 @@ class SavedLockStorage {
     if (legacyId == null || legacyId.isEmpty) return [];
 
     final legacyName = prefs.getString(_legacyCustomNameKey);
+    final normalizedId = LockMac.normalize(legacyId);
+    if (normalizedId != legacyId) {
+      await PairedLockStorage.migrateDeviceId(legacyId, normalizedId);
+    }
     final lock = SavedLock(
-      id: legacyId,
+      id: normalizedId,
       displayName: (legacyName != null && legacyName.isNotEmpty)
           ? legacyName
           : 'Main Lock',

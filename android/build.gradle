@@ -7,16 +7,18 @@ allprojects {
 
 rootProject.buildDir = "../build"
 
+// Flutter plugin Android libraries ship with their own compileSdk; force API 36
+// so dependency checks pass (e.g. awesome_notifications_core).
 subprojects {
     afterEvaluate { project ->
-        if (project.plugins.hasPlugin("com.android.application") ||
-                project.plugins.hasPlugin("com.android.library")) {
+        if (project.plugins.hasPlugin("com.android.library")) {
             project.android {
-                compileSdkVersion 36               
+                compileSdkVersion 36
             }
         }
     }
 }
+
 subprojects {
     project.buildDir = "${rootProject.buildDir}/${project.name}"
     project.evaluationDependsOn(':app')

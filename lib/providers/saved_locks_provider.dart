@@ -1,8 +1,10 @@
 import 'package:fitness_snack_lock/models/saved_lock.dart';
 import 'package:fitness_snack_lock/services/ble_service.dart';
+import 'package:fitness_snack_lock/services/lock_invite.dart';
 import 'package:fitness_snack_lock/services/pairing_service.dart';
 import 'package:fitness_snack_lock/services/paired_lock_storage.dart';
 import 'package:fitness_snack_lock/services/saved_lock_storage.dart';
+import 'package:fitness_snack_lock/utils/lock_mac.dart';
 import 'package:flutter_riverpod/legacy.dart';
 
 typedef SavedLocksState = ({
@@ -63,9 +65,8 @@ class SavedLocksNotifier extends StateNotifier<SavedLocksState> {
       isLoading: false,
     );
 
-    final watchLockId = primaryLockId ?? activeLockId;
-    if (watchLockId != null) {
-      await PairedLockStorage.syncLockToWatch(watchLockId);
+    if (primaryLockId != null) {
+      await PairedLockStorage.syncLockToWatch(primaryLockId);
     }
   }
 
@@ -118,23 +119,25 @@ class SavedLocksNotifier extends StateNotifier<SavedLocksState> {
   bool isPrimaryLock(String lockId) => state.primaryLockId == lockId;
 
   Future<void> setPrimaryLockId(String lockId) async {
-    if (!state.locks.any((lock) => lock.id == lockId)) return;
+    final id = LockMac.normalize(lockId);
+    if (!state.locks.any((lock) => lock.id == id)) return;
 
     final locks = [...state.locks];
-    final index = locks.indexWhere((lock) => lock.id == lockId);
+    final index = locks.indexWhere((lock) => lock.id == id);
     if (index < 0) return;
 
     final lock = locks.removeAt(index);
     locks.insert(0, lock);
 
     await SavedLockStorage.saveLocks(locks);
-    await SavedLockStorage.setPrimaryLockId(lockId);
+    await SavedLockStorage.setPrimaryLockId(id);
     state = (
       locks: locks,
       activeLockId: state.activeLockId,
-      primaryLockId: lockId,
+      primaryLockId: id,
       isLoading: state.isLoading,
     );
+    await PairedLockStorage.syncLockToWatch(id);
   }
 
   /// Reorders locks, persists the new list, and promotes index 0 to primary.
@@ -169,6 +172,7 @@ class SavedLocksNotifier extends StateNotifier<SavedLocksState> {
     final newPrimaryId = locks.first.id;
     if (newPrimaryId != previousPrimaryId) {
       await SavedLockStorage.setPrimaryLockId(newPrimaryId);
+      await PairedLockStorage.syncLockToWatch(newPrimaryId);
     }
 
     _setLocks(
@@ -200,12 +204,13 @@ class SavedLocksNotifier extends StateNotifier<SavedLocksState> {
     int? batteryLevel,
     int? rssi,
   }) async {
-    await PairingService.registerLock(deviceId);
+    final id = LockMac.normalize(deviceId);
+    await PairingService.registerLock(id);
 
-    final existing = lockById(deviceId);
+    final existing = lockById(id);
     final lock = (existing ??
             SavedLock(
-              id: deviceId,
+              id: id,
               displayName: displayName,
               hardwareName: hardwareName,
             ))
@@ -218,10 +223,10 @@ class SavedLocksNotifier extends StateNotifier<SavedLocksState> {
     );
 
     await SavedLockStorage.upsertLock(lock);
-    await SavedLockStorage.setActiveLockId(deviceId);
+    await SavedLockStorage.setActiveLockId(id);
 
     final locks = [...state.locks];
-    final index = locks.indexWhere((entry) => entry.id == deviceId);
+    final index = locks.indexWhere((entry) => entry.id == id);
     if (index >= 0) {
       locks[index] = lock;
     } else {
@@ -231,15 +236,39 @@ class SavedLocksNotifier extends StateNotifier<SavedLocksState> {
     var primaryLockId = state.primaryLockId;
     if (primaryLockId == null ||
         !locks.any((entry) => entry.id == primaryLockId)) {
-      primaryLockId = deviceId;
-      await SavedLockStorage.setPrimaryLockId(deviceId);
+      primaryLockId = id;
+      await SavedLockStorage.setPrimaryLockId(id);
+      await PairedLockStorage.syncLockToWatch(id);
     }
 
     _setLocks(
       locks,
-      activeLockId: deviceId,
+      activeLockId: id,
       primaryLockId: primaryLockId,
     );
+  }
+
+  /// Saves a shared lock locally. Does not connect or factory-reset the padlock.
+  Future<void> importSharedLock(LockInvite invite) async {
+    final id = LockMac.normalize(invite.macAddress);
+    await PairedLockStorage.pair(id);
+    await PairedLockStorage.saveSecretKey(id, invite.aesKey);
+    await PairedLockStorage.savePassword(id, invite.password);
+
+    final existing = lockById(id);
+    final lock = (existing ??
+            SavedLock(
+              id: id,
+              displayName: invite.name,
+            ))
+        .copyWith(displayName: invite.name);
+
+    await addOrUpdateLock(lock);
+
+    if (state.primaryLockId == null ||
+        !state.locks.any((entry) => entry.id == state.primaryLockId)) {
+      await setPrimaryLockId(id);
+    }
   }
 
   Future<void> renameLock(String lockId, String name) async {
@@ -274,6 +303,9 @@ class SavedLocksNotifier extends StateNotifier<SavedLocksState> {
 
     if (state.primaryLockId == lockId) {
       await SavedLockStorage.setPrimaryLockId(primaryLockId);
+      if (primaryLockId != null) {
+        await PairedLockStorage.syncLockToWatch(primaryLockId);
+      }
     }
 
     _setLocks(
@@ -307,16 +339,16 @@ class SavedLocksNotifier extends StateNotifier<SavedLocksState> {
   }
 
   Future<void> setActiveLockId(String? lockId) async {
-    await SavedLockStorage.setActiveLockId(lockId);
+    final id = lockId == null || lockId.isEmpty
+        ? null
+        : LockMac.normalize(lockId);
+    await SavedLockStorage.setActiveLockId(id);
     state = (
       locks: state.locks,
-      activeLockId: lockId,
+      activeLockId: id,
       primaryLockId: state.primaryLockId,
       isLoading: state.isLoading,
     );
-    if (lockId != null) {
-      await PairedLockStorage.syncLockToWatch(lockId);
-    }
   }
 
   String? get activeLockId => state.activeLockId;

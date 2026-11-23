@@ -51,6 +51,7 @@ class _HomePageState extends ConsumerState<HomePage>
 
   bool _isUnlocked = false;
   bool _isUnlocking = false;
+  bool _isRescuingPassword = false;
 
   late AnimationController _pulseController;
   late AnimationController _spinController;
@@ -282,19 +283,24 @@ class _HomePageState extends ConsumerState<HomePage>
   Future<void> _handleLockTap(String deviceId) async {
     if (_isUnlocking || _isUnlocked) return;
 
+    final targetId = widget.lockDeviceId ?? deviceId;
+    await ref.read(savedLocksProvider.notifier).setActiveLockId(targetId);
+    if (!mounted) return;
+    ref.read(bleProvider.notifier).bindToLock(targetId);
+
     setState(() => _isUnlocking = true);
     _startUnlockAnimation();
 
     try {
-      await LockConnectionHelper.awaitPendingConnect(deviceId);
-      final isUnlocked = await BleService.connectAndUnLock(deviceId);
+      await LockConnectionHelper.awaitPendingConnect(targetId);
+      final isUnlocked = await BleService.connectAndUnLock(targetId);
 
       if (!mounted) return;
 
       if (isUnlocked) {
         _stopUnlockAnimation();
         setState(() => _isUnlocking = false);
-        await _completeUnlockSuccess(deviceId);
+        await _completeUnlockSuccess(targetId);
       }
     } on LockAuthenticationException {
       if (!mounted) return;
@@ -316,6 +322,61 @@ class _HomePageState extends ConsumerState<HomePage>
         setState(() => _isUnlocking = false);
       }
     }
+  }
+
+  Future<void> _rescueFactoryPassword(String deviceId) async {
+    if (_isRescuingPassword || _isUnlocking) return;
+
+    setState(() => _isRescuingPassword = true);
+    try {
+      final restored = await BleService.rescueFactoryPassword(deviceId);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            restored
+                ? 'Factory password restored. Try unlock.'
+                : 'Password rescue failed. Stay near the lock and try again.',
+          ),
+          backgroundColor: restored ? _unlockedColor : _lockedColor,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Password rescue failed. Stay near the lock and try again.'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _isRescuingPassword = false);
+    }
+  }
+
+  Widget _buildFactoryPasswordRescueButton(String deviceId) {
+    if (!BleService.isFactoryPasswordRescueLock(deviceId)) {
+      return const SizedBox.shrink();
+    }
+
+    return Padding(
+      padding: const EdgeInsets.only(top: 24),
+      child: OutlinedButton(
+        onPressed: _isRescuingPassword
+            ? null
+            : () => _rescueFactoryPassword(deviceId),
+        style: OutlinedButton.styleFrom(
+          foregroundColor: _labelColor,
+          side: const BorderSide(color: _subtextColor),
+        ),
+        child: Text(
+          _isRescuingPassword
+              ? 'Restoring factory password...'
+              : 'Rescue factory password',
+        ),
+      ),
+    );
   }
 
   Widget _buildDrawer(BluetoothDevice? device, BleData bleState) {
@@ -513,7 +574,12 @@ class _HomePageState extends ConsumerState<HomePage>
                           isUnlocking: _isUnlocking,
                           pulseAnimation: _pulseAnimation,
                           spinController: _spinController,
-                          onTap: () => _handleLockTap(device.remoteId.str),
+                          onTap: () => _handleLockTap(
+                            widget.lockDeviceId ?? device.remoteId.str,
+                          ),
+                        ),
+                        _buildFactoryPasswordRescueButton(
+                          widget.lockDeviceId ?? device.remoteId.str,
                         ),
                       ],
                     ),
@@ -623,6 +689,8 @@ class _HomePageState extends ConsumerState<HomePage>
                           ),
                         ),
                       ),
+                      if (widget.lockDeviceId != null)
+                        _buildFactoryPasswordRescueButton(widget.lockDeviceId!),
                     ],
                   ),
                 ),

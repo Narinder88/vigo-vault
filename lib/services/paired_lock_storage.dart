@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:fitness_snack_lock/services/data_service.dart';
+import 'package:fitness_snack_lock/utils/lock_mac.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -259,10 +260,40 @@ class PairedLockStorage {
     return DataRequestPattern.defaultPasswordHex.toLowerCase();
   }
 
+  /// Copies credentials from [fromId] onto the canonical [toId], then drops [fromId].
+  static Future<void> migrateDeviceId(String fromId, String toId) async {
+    if (fromId.isEmpty || toId.isEmpty || fromId == toId) return;
+
+    final secret = await getSecretKey(fromId);
+    final password = await getPassword(fromId);
+    final wasPaired = await isPaired(fromId);
+    final hasSecret = secret != null && secret.isNotEmpty;
+    final hasPassword = password != null && password.isNotEmpty;
+    if (!wasPaired && !hasSecret && !hasPassword) return;
+
+    await pair(toId);
+    if (secret != null && secret.isNotEmpty) {
+      await saveSecretKey(toId, sanitizeAesKeyHex(secret));
+    }
+    if (password != null &&
+        password.isNotEmpty &&
+        isValidPasswordHex(password)) {
+      await savePassword(toId, password);
+    }
+    await unpair(fromId);
+  }
+
   /// Pushes the lock MAC and secret key to the paired watch app (Wear OS / watchOS).
-  /// Failures are logged only — callers must not be blocked by watch sync issues.
+  /// Only the primary lock is synced. Failures are logged and do not block callers.
   static Future<void> syncLockToWatch(String deviceId) async {
     if (deviceId.isEmpty || !_useNativeSecureStorage) return;
+
+    final prefs = await SharedPreferences.getInstance();
+    final primary = prefs.getString('smart_lock_primary_lock_id');
+    if (primary == null ||
+        LockMac.normalize(primary) != LockMac.normalize(deviceId)) {
+      return;
+    }
 
       try {
         final secretKey = await getSecretKey(deviceId);

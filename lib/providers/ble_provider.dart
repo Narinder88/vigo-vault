@@ -1,3 +1,4 @@
+import 'package:fitness_snack_lock/utils/lock_mac.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:flutter_riverpod/legacy.dart';
 
@@ -114,6 +115,28 @@ class BleProvider extends StateNotifier<BleData> {
       isConnecting: state.isConnecting,
       connectingDeviceId: state.connectingDeviceId,
       requiresClaiming: state.requiresClaiming,
+    );
+  }
+
+  /// Points the provider at [deviceId] and drops a cached device for any other MAC.
+  void bindToLock(String deviceId) {
+    final target = LockMac.normalize(deviceId);
+    final currentId = state.device?.remoteId.str;
+    final sameDevice = currentId != null &&
+        LockMac.normalize(currentId) == target;
+    final connectingId = state.connectingDeviceId;
+    final sameConnect = connectingId != null &&
+        LockMac.normalize(connectingId) == target;
+
+    state = (
+      device: sameDevice ? state.device : null,
+      rssi: sameDevice ? state.rssi : -100,
+      batteryLevel: sameDevice ? state.batteryLevel : 0,
+      token: sameDevice ? state.token : null,
+      customDeviceName: sameDevice ? state.customDeviceName : null,
+      isConnecting: sameConnect && state.isConnecting,
+      connectingDeviceId: sameConnect ? connectingId : null,
+      requiresClaiming: sameDevice && state.requiresClaiming,
     );
   }
 

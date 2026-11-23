@@ -67,6 +67,8 @@
 		<array>
 			<string>fetch</string>
 		</array>
+		<key>NSCameraUsageDescription</key>
+		<string>Scan a shared lock QR code to add it on this phone.</string>
 		<key>NSBluetoothAlwaysUsageDescription</key>
 		<string>We need bluetooth to connect with Padlock through BLE.</string>
 		<key>NSBluetoothPeripheralUsageDescription</key>

@@ -3,6 +3,7 @@ import 'dart:ui' show lerpDouble;
 
 import 'package:fitness_snack_lock/constants/app_branding.dart';
 import 'package:fitness_snack_lock/features/device/device_scanning_page/device_scanning_page.dart';
+import 'package:fitness_snack_lock/features/device/share_lock_dialog.dart';
 import 'package:fitness_snack_lock/features/lock/home_page.dart';
 import 'package:fitness_snack_lock/models/saved_lock.dart';
 import 'package:fitness_snack_lock/providers/ble_provider.dart';
@@ -12,8 +13,10 @@ import 'package:fitness_snack_lock/providers/saved_locks_provider.dart';
 import 'package:fitness_snack_lock/services/ble_connection_monitor.dart';
 import 'package:fitness_snack_lock/services/ble_debug_log.dart';
 import 'package:fitness_snack_lock/services/ble_service.dart';
+import 'package:fitness_snack_lock/services/lock_invite.dart';
 import 'package:fitness_snack_lock/services/lock_connection_helper.dart';
 import 'package:fitness_snack_lock/services/saved_lock_storage.dart';
+import 'package:fitness_snack_lock/utils/lock_mac.dart';
 import 'package:fitness_snack_lock/utils/rssi_utils.dart';
 import 'package:fitness_snack_lock/widgets/rename_lock_dialog.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
@@ -33,7 +36,7 @@ class DeviceDashboardPage extends ConsumerStatefulWidget {
       _DeviceDashboardPageState();
 }
 
-enum _LockMenuAction { rename, setPrimary, remove }
+enum _LockMenuAction { rename, share, setPrimary, forget, factoryReset }
 
 class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
   static const _backgroundColor = Color(0xFF1A1B1E);
@@ -323,20 +326,23 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
     }
   }
 
+  bool _sameLock(String? remoteId, String lockId) {
+    if (remoteId == null || remoteId.isEmpty) return false;
+    return LockMac.normalize(remoteId) == LockMac.normalize(lockId);
+  }
+
   bool _hasBleSession(SavedLock lock, BleData bleState) {
-    return bleState.device?.remoteId.str == lock.id &&
+    return _sameLock(bleState.device?.remoteId.str, lock.id) &&
         bleState.token != null &&
         !bleState.isConnecting;
   }
 
   bool _isLockConnected(SavedLock lock, BleData bleState) {
-    if (_unlockReadyLockIds.contains(lock.id)) return true;
-    if (_hasBleSession(lock, bleState)) return true;
+    if (!BluetoothDevice.fromId(lock.id).isConnected) return false;
     if (BleService.isDeviceConnected(lock.id)) return true;
-    if (LockConnectionHelper.isValidToken(BleService.tokenForDevice(lock.id))) {
-      return true;
-    }
-    return false;
+    if (_hasBleSession(lock, bleState)) return true;
+    return _unlockReadyLockIds.contains(lock.id) &&
+        LockConnectionHelper.isValidToken(BleService.tokenForDevice(lock.id));
   }
 
   String _bleStateSummary(BleData bleState, String lockId) {
@@ -354,7 +360,8 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
     if (_isLockConnected(lock, bleState)) return false;
     if (_sessionLockIds.contains(lock.id)) return true;
     return _connectingLockId == lock.id ||
-        bleState.isConnecting ||
+        (bleState.isConnecting &&
+            _sameLock(bleState.connectingDeviceId, lock.id)) ||
         LockConnectionHelper.hasPendingConnect(lock.id);
   }
 
@@ -450,6 +457,19 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
 
   Future<void> _openLock(SavedLock lock) async {
     final sessionGen = _beginLockSession(lock.id);
+    await ref.read(savedLocksProvider.notifier).setActiveLockId(lock.id);
+    if (!mounted) {
+      _endLockSession(lock.id, success: false, sessionGeneration: sessionGen);
+      return;
+    }
+    ref.read(bleProvider.notifier).bindToLock(lock.id);
+    if (mounted) {
+      setState(() {
+        _unlockReadyLockIds.removeWhere(
+          (id) => !_sameLock(id, lock.id),
+        );
+      });
+    }
     final bleState = ref.read(bleProvider);
     print(
       '[LockCard] _openLock tap lockId=${lock.id} name=${lock.displayName} '
@@ -607,17 +627,6 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
     );
 
     if (!mounted || added != true) return;
-
-    final activeId = ref.read(savedLocksProvider).activeLockId;
-    if (activeId == null) return;
-
-    await Navigator.of(context).push(
-      MaterialPageRoute<void>(
-        builder: (context) => LockControlPage(lockId: activeId),
-      ),
-    );
-
-    if (!mounted) return;
     await _warmUpPrimaryLockInBackground();
   }
 
@@ -635,14 +644,82 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
     if (!mounted) return;
 
     final activeDevice = ref.read(bleProvider).device;
-    if (activeDevice?.remoteId.str == lock.id) {
+    if (_sameLock(activeDevice?.remoteId.str, lock.id)) {
       ref.read(bleProvider.notifier).setCustomDeviceName(newName);
     }
   }
 
+  Future<void> _shareLock(SavedLock lock) async {
+    final inviteCode = await LockInvite.encode(lock);
+    if (!mounted) return;
+
+    if (inviteCode == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'This lock does not have a shareable MAC address and key yet.',
+          ),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+
+    await showShareLockDialog(
+      context: context,
+      lockName: lock.displayName,
+      inviteCode: inviteCode,
+    );
+  }
+
+  Future<void> _forgetLockOnThisPhone(SavedLock lock) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          backgroundColor: _cardColor,
+          title: const Text(
+            'Forget on this phone',
+            style: TextStyle(color: _labelColor),
+          ),
+          content: Text(
+            'Remove "${lock.displayName}" from this phone only. '
+            'The padlock is not factory reset, and anyone with a shared '
+            'invite can still open it.',
+            style: const TextStyle(color: _subtextColor),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              style: FilledButton.styleFrom(
+                backgroundColor: const Color(0xFFFF2020),
+              ),
+              child: const Text('Forget'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (confirmed != true || !mounted) return;
+
+    await _forgetLockLocally(lock);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('${lock.displayName} was removed from this phone.'),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+
   Future<void> _forgetLockLocally(SavedLock lock) async {
     final activeDevice = ref.read(bleProvider).device;
-    if (activeDevice?.remoteId.str == lock.id) {
+    if (_sameLock(activeDevice?.remoteId.str, lock.id)) {
       await BleService.disconnectDevice(lock.id);
       ref.read(bleProvider.notifier).reset();
     } else {
@@ -838,7 +915,8 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
       ),
       builder: (sheetContext) {
         return SafeArea(
-          child: Column(
+          child: SingleChildScrollView(
+            child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
               ListTile(
@@ -850,8 +928,28 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
                   'Rename',
                   style: TextStyle(color: _labelColor),
                 ),
+                subtitle: const Text(
+                  'Bedroom, Fridge, Freezer, or any name',
+                  style: TextStyle(color: _subtextColor),
+                ),
                 onTap: () =>
                     Navigator.of(sheetContext).pop(_LockMenuAction.rename),
+              ),
+              ListTile(
+                leading: const Icon(
+                  PhosphorIconsRegular.shareNetwork,
+                  color: _labelColor,
+                ),
+                title: const Text(
+                  'Share',
+                  style: TextStyle(color: _labelColor),
+                ),
+                subtitle: const Text(
+                  'QR code and invite code',
+                  style: TextStyle(color: _subtextColor),
+                ),
+                onTap: () =>
+                    Navigator.of(sheetContext).pop(_LockMenuAction.share),
               ),
               if (!isPrimary)
                 ListTile(
@@ -872,13 +970,34 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
                   color: Color(0xFFFF2020),
                 ),
                 title: const Text(
-                  'Remove',
+                  'Forget on this phone',
                   style: TextStyle(color: Color(0xFFFF2020)),
                 ),
+                subtitle: const Text(
+                  'Removes the saved lock locally. The padlock is not reset.',
+                  style: TextStyle(color: _subtextColor),
+                ),
                 onTap: () =>
-                    Navigator.of(sheetContext).pop(_LockMenuAction.remove),
+                    Navigator.of(sheetContext).pop(_LockMenuAction.forget),
+              ),
+              ListTile(
+                leading: const Icon(
+                  PhosphorIconsRegular.arrowCounterClockwise,
+                  color: Color(0xFFFF2020),
+                ),
+                title: const Text(
+                  'Factory reset',
+                  style: TextStyle(color: Color(0xFFFF2020)),
+                ),
+                subtitle: const Text(
+                  'Resets the padlock over Bluetooth, then removes it here.',
+                  style: TextStyle(color: _subtextColor),
+                ),
+                onTap: () => Navigator.of(sheetContext)
+                    .pop(_LockMenuAction.factoryReset),
               ),
             ],
+            ),
           ),
         );
       },
@@ -889,9 +1008,13 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
     switch (action) {
       case _LockMenuAction.rename:
         await _renameLock(lock);
+      case _LockMenuAction.share:
+        await _shareLock(lock);
       case _LockMenuAction.setPrimary:
         await _setAsPrimaryLock(lock);
-      case _LockMenuAction.remove:
+      case _LockMenuAction.forget:
+        await _forgetLockOnThisPhone(lock);
+      case _LockMenuAction.factoryReset:
         await _removeLock(lock);
     }
   }
@@ -939,7 +1062,7 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
 
     final locksState = ref.watch(savedLocksProvider);
     final locks = locksState.locks;
-    final canAddLock = !locksState.isLoading && locks.isEmpty;
+    final canAddLock = !locksState.isLoading;
 
     return Container(
       decoration: BoxDecoration(

@@ -1,7 +1,9 @@
 import 'dart:async';
 
 import 'package:fitness_snack_lock/constants/colors.dart';
+import 'package:fitness_snack_lock/features/device/import_shared_lock_page.dart';
 import 'package:fitness_snack_lock/providers/ble_provider.dart';
+import 'package:fitness_snack_lock/utils/lock_mac.dart';
 import 'package:fitness_snack_lock/widgets/smart_lock_rssi_reader.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
@@ -115,7 +117,11 @@ class _DeviceScanningPageState extends ConsumerState<DeviceScanningPage> {
   List<ScanResult> _filterScanResults(List<ScanResult> results) {
     return results
         .where((e) => e.advertisementData.advName.isNotEmpty)
-        .where((e) => !_savedLockIds.contains(e.device.remoteId.str))
+        .where(
+          (e) => !_savedLockIds.contains(
+            LockMac.normalize(e.device.remoteId.str),
+          ),
+        )
         .toList();
   }
 
@@ -219,6 +225,32 @@ class _DeviceScanningPageState extends ConsumerState<DeviceScanningPage> {
     );
   }
 
+  Future<void> _openImport() async {
+    await _ensureScanStoppedOnce();
+    if (!mounted) return;
+
+    final imported = await Navigator.of(context).push<bool>(
+      MaterialPageRoute<bool>(
+        builder: (context) => const ImportSharedLockPage(),
+      ),
+    );
+    if (!mounted) return;
+
+    if (imported == true) {
+      if (widget.fromDashboard) {
+        Navigator.of(context).pop(true);
+      }
+      return;
+    }
+
+    _scanStopped = false;
+    await FlutterBluePlus.adapterState
+        .where((state) => state == BluetoothAdapterState.on)
+        .first;
+    if (!mounted || _connectSessionActive) return;
+    await FlutterBluePlus.startScan(timeout: const Duration(seconds: 30));
+  }
+
   Future<void> _connectToDevice({
     required ScanResult scanResult,
     required BuildContext sheetContext,
@@ -230,9 +262,17 @@ class _DeviceScanningPageState extends ConsumerState<DeviceScanningPage> {
 
     if (!mounted) return;
 
+    final deviceId = LockMac.normalize(scanResult.device.remoteId.str);
+
     try {
-      final result =
-          await BleService.connect(scanResult.device.remoteId.str);
+      final knownIds = ref.read(savedLocksProvider.notifier).allDeviceIds;
+      await BleService.runExclusive(() async {
+        await BleService.releaseAdapterForNewConnection(
+          deviceId,
+          knownDeviceIds: knownIds,
+        );
+      });
+      final result = await BleService.connect(deviceId);
 
       if (!mounted) return;
 
@@ -248,7 +288,7 @@ class _DeviceScanningPageState extends ConsumerState<DeviceScanningPage> {
 
       final token = BleService.lastConnectToken;
       if (!_isValidToken(token)) {
-        await BleService.resetDeviceConnection(scanResult.device.remoteId.str);
+        await BleService.resetDeviceConnection(deviceId);
         _failConnectionFlow(
           sheetContext: sheetContext,
           message: 'Token handshake failed. Please try again.',
@@ -262,7 +302,7 @@ class _DeviceScanningPageState extends ConsumerState<DeviceScanningPage> {
 
       final readings = await _readBatteryAndRssi(
         scanResult: scanResult,
-        deviceId: scanResult.device.remoteId.str,
+        deviceId: deviceId,
         token: validToken,
       );
 
@@ -276,19 +316,19 @@ class _DeviceScanningPageState extends ConsumerState<DeviceScanningPage> {
         rssi: readings.rssi,
       );
     } on TimeoutException {
-      await BleService.resetDeviceConnection(scanResult.device.remoteId.str);
+      await BleService.resetDeviceConnection(deviceId);
       _failConnectionFlow(
         sheetContext: sheetContext,
         message: 'Connection timed out. Please try again.',
       );
     } catch (_) {
-      await BleService.resetDeviceConnection(scanResult.device.remoteId.str);
+      await BleService.resetDeviceConnection(deviceId);
       _failConnectionFlow(
         sheetContext: sheetContext,
         message: 'Something went wrong while connecting. Please try again.',
       );
     } finally {
-      await BleService.releaseOnDemandConnection(scanResult.device.remoteId.str);
+      await BleService.releaseOnDemandConnection(deviceId);
     }
   }
 
@@ -324,6 +364,13 @@ class _DeviceScanningPageState extends ConsumerState<DeviceScanningPage> {
       backgroundColor: Colors.white,
       appBar: AppBar(
         backgroundColor: Colors.white,
+        title: const Text('Add Lock'),
+        actions: [
+          TextButton(
+            onPressed: _connectSessionActive ? null : _openImport,
+            child: const Text('Import'),
+          ),
+        ],
         leading: widget.fromDashboard
             ? IconButton(
                 icon: const Icon(Icons.arrow_back),
@@ -603,6 +650,14 @@ class _DeviceScanningPageState extends ConsumerState<DeviceScanningPage> {
               child: Text(
                 'Please hold your phone\nnear the Smart Lock',
                 textAlign: TextAlign.center,
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.only(top: 20),
+              child: OutlinedButton.icon(
+                onPressed: _connectSessionActive ? null : _openImport,
+                icon: const Icon(Icons.qr_code_scanner),
+                label: const Text('Import Shared Lock'),
               ),
             ),
           ],
