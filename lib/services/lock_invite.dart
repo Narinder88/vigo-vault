@@ -111,9 +111,12 @@ class LockInvite {
       );
     }
 
-    final rawMac = json['mac']?.toString() ?? json['macAddress']?.toString() ?? '';
-    final normalizedMac = LockMac.normalize(rawMac);
-    final macAddress = LockMac.isHardwareMac(normalizedMac) ? normalizedMac : '';
+    final macAddress = _readMac(json);
+    if (macAddress == null) {
+      return const LockInviteParseResult.failure(
+        'The invite MAC address must be 12 hex digits.',
+      );
+    }
 
     final aesKey = PairedLockStorage.sanitizeAesKeyHex(
       json['aesKey']?.toString() ?? '',
@@ -141,6 +144,21 @@ class LockInvite {
         password: password,
       ),
     );
+  }
+
+  /// Empty, omitted, or the shared placeholder means "discover by name".
+  /// A non-empty value must be a 12-digit hardware MAC. Returns null when it is not.
+  static String? _readMac(Map<String, dynamic> json) {
+    final macField = json.containsKey('mac') ? json['mac']?.toString().trim() : null;
+    final legacyField = json.containsKey('macAddress')
+        ? json['macAddress']?.toString().trim()
+        : null;
+    final rawMac = (macField != null && macField.isNotEmpty)
+        ? macField
+        : (legacyField ?? '');
+    if (rawMac.isEmpty || LockMac.isPlaceholderMac(rawMac)) return '';
+    if (!LockMac.isMac(rawMac)) return null;
+    return LockMac.normalize(rawMac);
   }
 
   static String _padBase64(String value) {

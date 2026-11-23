@@ -21,6 +21,7 @@ class _ImportSharedLockPageState extends ConsumerState<ImportSharedLockPage> {
   var _scanning = false;
   var _importing = false;
   String? _error;
+  String? _status;
 
   @override
   void dispose() {
@@ -39,9 +40,13 @@ class _ImportSharedLockPageState extends ConsumerState<ImportSharedLockPage> {
       return;
     }
 
+    final discoverByName = invite.macAddress.isEmpty;
     setState(() {
       _importing = true;
       _error = null;
+      _status = discoverByName
+          ? 'Looking for a nearby ${invite.name} lock...'
+          : null;
     });
 
     try {
@@ -52,12 +57,14 @@ class _ImportSharedLockPageState extends ConsumerState<ImportSharedLockPage> {
       if (!mounted) return;
       setState(() {
         _importing = false;
+        _status = null;
         _error = error.message;
       });
     } catch (_) {
       if (!mounted) return;
       setState(() {
         _importing = false;
+        _status = null;
         _error = 'Could not save this lock on this phone.';
       });
     }
@@ -94,7 +101,9 @@ class _ImportSharedLockPageState extends ConsumerState<ImportSharedLockPage> {
             onPressed: _importing
                 ? null
                 : () => _importRaw(_codeController.text),
-            child: Text(_importing ? 'Saving...' : 'Import pasted code'),
+            child: Text(
+              _importing ? (_status ?? 'Saving...') : 'Import pasted code',
+            ),
           ),
           const SizedBox(height: 12),
           OutlinedButton.icon(
