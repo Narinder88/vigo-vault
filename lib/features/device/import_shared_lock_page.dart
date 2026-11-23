@@ -167,6 +167,11 @@ class _ImportSharedLockPageState extends ConsumerState<ImportSharedLockPage> {
           const Text(
             'Paste an invite code, or scan the QR code from the phone that already has this lock.',
           ),
+          const SizedBox(height: 8),
+          const Text(
+            'Keep the lock within a few feet and make sure no other phone is currently connected to it.',
+            style: TextStyle(color: Color(0xFF616161)),
+          ),
           const SizedBox(height: 16),
           TextField(
             controller: _codeController,

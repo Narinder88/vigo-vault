@@ -359,8 +359,8 @@ class SavedLocksNotifier extends StateNotifier<SavedLocksState> {
         (savedIds.contains(found) || savedIds.contains(connectId));
     if (connectId.isEmpty || alreadySaved) {
       throw SharedLockNotFound(
-        'No nearby ${invite.name} lock accepted this invite. '
-        'Wake the correct lock and try again.',
+        'No nearby lock responded. Move closer to the lock, '
+        'make sure no other phone is currently connected to it, and try again.',
       );
     }
     debugPrint('Import shared lock by name ${invite.name} -> $connectId');

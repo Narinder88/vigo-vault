@@ -1854,6 +1854,8 @@ class BleService {
     return null;
   }
 
+  static const Duration _inviteDiscoveryTimeout = Duration(seconds: 8);
+
   static Future<List<String>> _scanUnsavedRemoteIds(
     String advertisedName,
     Set<String> savedRemoteIds,
@@ -1863,22 +1865,25 @@ class BleService {
 
     debugPrint(
       'Shared lock scan for "$target" '
-      '(${_sharedLockScanTimeout.inSeconds}s, service fee7)',
+      '(${_inviteDiscoveryTimeout.inSeconds}s, service fee7)',
     );
 
     final discovered = <ScanResult>[];
     final subscription = FlutterBluePlus.onScanResults.listen(discovered.addAll);
+    final deadline = DateTime.now().add(_inviteDiscoveryTimeout);
+    DateTime? firstMatchAt;
     try {
-      if (FlutterBluePlus.isScanningNow) {
-        await FlutterBluePlus.stopScan();
-      }
-      await FlutterBluePlus.startScan(
-        withServices: [_lockServiceUuid],
-        timeout: _sharedLockScanTimeout,
-      );
-      final deadline = DateTime.now().add(_sharedLockScanTimeout);
-      DateTime? firstMatchAt;
       while (DateTime.now().isBefore(deadline)) {
+        if (!FlutterBluePlus.isScanningNow) {
+          try {
+            await FlutterBluePlus.startScan(
+              withServices: [_lockServiceUuid],
+              timeout: _inviteDiscoveryTimeout,
+            );
+          } catch (error) {
+            debugPrint('Shared lock scan restart failed for "$target": $error');
+          }
+        }
         final rankedSoFar = _rankedUnsavedRemoteIds(
           discovered,
           target,
@@ -1890,8 +1895,6 @@ class BleService {
               const Duration(seconds: 2)) {
             break;
           }
-        } else if (!FlutterBluePlus.isScanningNow && discovered.isNotEmpty) {
-          break;
         }
         await Future<void>.delayed(const Duration(milliseconds: 200));
       }
