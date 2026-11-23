@@ -1,5 +1,8 @@
+import 'dart:async';
+
 import 'package:fitness_snack_lock/models/saved_lock.dart';
 import 'package:fitness_snack_lock/providers/saved_locks_provider.dart';
+import 'package:fitness_snack_lock/services/ble_service.dart';
 import 'package:fitness_snack_lock/services/lock_invite.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -7,11 +10,19 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:share_plus/share_plus.dart';
 
+Future<({String code, SavedLock lock})?> _encodeInvite(SavedLock lock) async {
+  try {
+    return await LockInvite.encode(lock);
+  } catch (_) {
+    return null;
+  }
+}
+
 Future<void> showShareLockDialog({
   required BuildContext context,
   required SavedLock lock,
 }) async {
-  final prepared = await LockInvite.encode(lock);
+  final prepared = await _encodeInvite(lock);
   if (!context.mounted) return;
 
   if (prepared == null) {
@@ -32,6 +43,7 @@ Future<void> showShareLockDialog({
 
   final inviteCode = prepared.code;
   final lockName = prepared.lock.displayName;
+  unawaited(BleService.wakeLockForSharing(prepared.lock.id));
   return showDialog<void>(
     context: context,
     builder: (dialogContext) {
@@ -83,30 +95,35 @@ Future<void> showShareLockDialog({
         actions: [
           TextButton(
             onPressed: () async {
-              await Clipboard.setData(ClipboardData(text: inviteCode));
-              if (!dialogContext.mounted) return;
-              ScaffoldMessenger.of(dialogContext).showSnackBar(
-                const SnackBar(
-                  content: Text('Invite code copied.'),
-                  behavior: SnackBarBehavior.floating,
-                ),
-              );
+              try {
+                await Clipboard.setData(ClipboardData(text: inviteCode));
+                if (!dialogContext.mounted) return;
+                ScaffoldMessenger.of(dialogContext).showSnackBar(
+                  const SnackBar(
+                    content: Text('Invite code copied.'),
+                    behavior: SnackBarBehavior.floating,
+                  ),
+                );
+              } catch (_) {}
             },
             child: const Text('Copy'),
           ),
           FilledButton(
             onPressed: () async {
-              final box = dialogContext.findRenderObject() as RenderBox?;
-              final origin = box == null
-                  ? null
-                  : box.localToGlobal(Offset.zero) & box.size;
-              await SharePlus.instance.share(
-                ShareParams(
-                  text: inviteCode,
-                  subject: '$lockName lock invite',
-                  sharePositionOrigin: origin,
-                ),
-              );
+              try {
+                if (!dialogContext.mounted) return;
+                final box = dialogContext.findRenderObject() as RenderBox?;
+                final origin = box == null
+                    ? null
+                    : box.localToGlobal(Offset.zero) & box.size;
+                await SharePlus.instance.share(
+                  ShareParams(
+                    text: inviteCode,
+                    subject: '$lockName lock invite',
+                    sharePositionOrigin: origin,
+                  ),
+                );
+              } catch (_) {}
             },
             style: FilledButton.styleFrom(
               backgroundColor: const Color(0xFF00E676),

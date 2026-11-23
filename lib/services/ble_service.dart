@@ -2085,6 +2085,41 @@ class BleService {
     );
   }
 
+  static const Duration _shareWakeTimeout = Duration(seconds: 4);
+
+  /// Brief connect-and-disconnect that nudges the padlock into fast advertising.
+  /// Does not send an unlock command. Failures are ignored.
+  static Future<void> wakeLockForSharing(String remoteId) async {
+    try {
+      final id = LockMac.normalize(remoteId.trim());
+      if (id.isEmpty) return;
+      await runExclusive(() => _wakeLockForSharing(id));
+    } catch (_) {}
+  }
+
+  static Future<void> _wakeLockForSharing(String id) async {
+    final device = BluetoothDevice.fromId(id);
+    try {
+      await _stopScanBeforeConnect();
+      await device
+          .connect(
+            timeout: _shareWakeTimeout,
+            license: License.nonprofit,
+            autoConnect: false,
+          )
+          .timeout(_shareWakeTimeout);
+    } catch (_) {}
+    try {
+      await device.disconnect(queue: false).timeout(const Duration(seconds: 2));
+    } catch (_) {}
+    _resetHandshakeState(id);
+    if (_connectedDevice != null &&
+        LockMac.normalize(_connectedDevice!.remoteId.str) == id) {
+      _connectedDevice = null;
+      _writeCharacteristic = null;
+    }
+  }
+
   static Future<bool> connect(String deviceId) async {
     final id = LockMac.normalize(deviceId);
     return runExclusive(() async {

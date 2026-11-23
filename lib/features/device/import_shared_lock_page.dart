@@ -29,52 +29,74 @@ class _ImportSharedLockPageState extends ConsumerState<ImportSharedLockPage> {
   @override
   void dispose() {
     _codeController.dispose();
-    _scannerController.dispose();
+    try {
+      _scannerController.dispose();
+    } catch (_) {}
     super.dispose();
   }
 
   void _onDetect(BarcodeCapture capture) {
-    if (_importing || _hasHandledScan) return;
+    if (!mounted || _importing || _hasHandledScan) return;
 
-    final raw = capture.barcodes
-        .map((barcode) => barcode.rawValue)
-        .whereType<String>()
-        .where((value) => value.trim().isNotEmpty)
-        .firstOrNull;
-    if (raw == null) return;
+    try {
+      final raw = capture.barcodes
+          .map((barcode) => barcode.rawValue)
+          .whereType<String>()
+          .where((value) => value.trim().isNotEmpty)
+          .firstOrNull;
+      if (raw == null) return;
 
-    final parsed = LockInvite.parse(raw);
-    final invite = parsed.invite;
-    if (invite == null) {
-      setState(() => _error = parsed.error);
-      return;
+      final parsed = LockInvite.parse(raw);
+      final invite = parsed.invite;
+      if (invite == null) {
+        if (!mounted) return;
+        setState(() => _error = parsed.error);
+        return;
+      }
+
+      _hasHandledScan = true;
+      _importing = true;
+      _codeController.text = raw;
+      unawaited(_runImport(invite, stopScanner: true));
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _importing = false;
+        _hasHandledScan = false;
+        _error = 'Could not read that QR code. Try again.';
+      });
     }
-
-    _hasHandledScan = true;
-    _importing = true;
-    _codeController.text = raw;
-    unawaited(_runImport(invite, stopScanner: true));
   }
 
   void _importPastedCode() {
-    if (_importing || _hasHandledScan) return;
+    if (!mounted || _importing || _hasHandledScan) return;
 
-    final parsed = LockInvite.parse(_codeController.text);
-    final invite = parsed.invite;
-    if (invite == null) {
-      setState(() => _error = parsed.error);
-      return;
+    try {
+      final parsed = LockInvite.parse(_codeController.text);
+      final invite = parsed.invite;
+      if (invite == null) {
+        setState(() => _error = parsed.error);
+        return;
+      }
+
+      _importing = true;
+      if (_scanning) _hasHandledScan = true;
+      unawaited(_runImport(invite, stopScanner: _scanning));
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _importing = false;
+        _hasHandledScan = false;
+        _error = 'Could not read that invite code. Try again.';
+      });
     }
-
-    _importing = true;
-    if (_scanning) _hasHandledScan = true;
-    unawaited(_runImport(invite, stopScanner: _scanning));
   }
 
   Future<void> _runImport(
     LockInvite invite, {
     required bool stopScanner,
   }) async {
+    if (!mounted) return;
     final discoverByName = invite.macAddress.isEmpty;
     setState(() {
       _error = null;
