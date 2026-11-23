@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:fitness_snack_lock/models/saved_lock.dart';
+import 'package:fitness_snack_lock/services/hardware_mac_service.dart';
 import 'package:fitness_snack_lock/services/paired_lock_storage.dart';
 import 'package:fitness_snack_lock/utils/lock_mac.dart';
 
@@ -20,22 +21,28 @@ class LockInvite {
   static const int version = 1;
 
   /// UTF-8 JSON `{ v, name, macAddress, aesKey, password }` encoded as Base64.
-  static Future<String?> encode(SavedLock lock) async {
-    final macAddress = LockMac.normalize(lock.id);
+  ///
+  /// [macAddress] is the 6-byte hardware MAC, never a CoreBluetooth UUID.
+  static Future<({String code, SavedLock lock})?> encode(SavedLock lock) async {
+    final shareable = await HardwareMacService.persistForLock(lock);
+    if (shareable == null) return null;
+
+    final macAddress = LockMac.normalize(shareable.hardwareMac ?? shareable.id);
     if (!LockMac.isMac(macAddress)) return null;
 
+    final credentialId = shareable.peripheralUuid ?? shareable.id;
     final aesKey = PairedLockStorage.sanitizeAesKeyHex(
-      await PairedLockStorage.ensureSecretKey(macAddress),
+      await PairedLockStorage.ensureSecretKey(credentialId),
     );
     final password = PairedLockStorage.sanitizePasswordHex(
-      await PairedLockStorage.ensurePassword(macAddress),
+      await PairedLockStorage.ensurePassword(credentialId),
     );
     if (!PairedLockStorage.isValidAesKeyHex(aesKey) ||
         !PairedLockStorage.isValidPasswordHex(password)) {
       return null;
     }
 
-    final name = lock.displayName.trim();
+    final name = shareable.displayName.trim();
     if (name.isEmpty) return null;
 
     final payload = jsonEncode({
@@ -45,7 +52,10 @@ class LockInvite {
       'aesKey': aesKey,
       'password': password,
     });
-    return base64Encode(utf8.encode(payload));
+    return (
+      code: base64Encode(utf8.encode(payload)),
+      lock: shareable,
+    );
   }
 
   static LockInviteParseResult parse(String raw) {

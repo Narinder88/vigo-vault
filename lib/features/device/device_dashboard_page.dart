@@ -13,7 +13,6 @@ import 'package:fitness_snack_lock/providers/saved_locks_provider.dart';
 import 'package:fitness_snack_lock/services/ble_connection_monitor.dart';
 import 'package:fitness_snack_lock/services/ble_debug_log.dart';
 import 'package:fitness_snack_lock/services/ble_service.dart';
-import 'package:fitness_snack_lock/services/lock_invite.dart';
 import 'package:fitness_snack_lock/services/lock_connection_helper.dart';
 import 'package:fitness_snack_lock/services/saved_lock_storage.dart';
 import 'package:fitness_snack_lock/utils/lock_mac.dart';
@@ -650,25 +649,9 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
   }
 
   Future<void> _shareLock(SavedLock lock) async {
-    final inviteCode = await LockInvite.encode(lock);
-    if (!mounted) return;
-
-    if (inviteCode == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'This lock does not have a shareable MAC address and key yet.',
-          ),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
-      return;
-    }
-
     await showShareLockDialog(
       context: context,
-      lockName: lock.displayName,
-      inviteCode: inviteCode,
+      lock: lock,
     );
   }
 

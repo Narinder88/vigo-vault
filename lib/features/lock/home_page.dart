@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:fitness_snack_lock/constants/app_branding.dart';
+import 'package:fitness_snack_lock/features/device/share_lock_dialog.dart';
 import 'package:fitness_snack_lock/features/device/device_scanning_page/device_scanning_page.dart';
 import 'package:fitness_snack_lock/providers/ble_provider.dart';
 import 'package:fitness_snack_lock/providers/in_app_review_provider.dart';
@@ -198,6 +199,18 @@ class _HomePageState extends ConsumerState<HomePage>
 
     scaffoldState.closeDrawer();
     await Future<void>.delayed(const Duration(milliseconds: 260));
+  }
+
+  Future<void> _shareCurrentLock(BluetoothDevice? device) async {
+    await _closeDrawerIfOpen();
+    if (!mounted) return;
+
+    final lockId = widget.lockDeviceId ?? device?.remoteId.str;
+    if (lockId == null || lockId.isEmpty) return;
+    final lock = ref.read(savedLocksProvider.notifier).lockById(lockId);
+    if (lock == null) return;
+
+    await showShareLockDialog(context: context, lock: lock);
   }
 
   Future<void> _showRenameDialog() async {
@@ -442,6 +455,21 @@ class _HomePageState extends ConsumerState<HomePage>
                   letterSpacing: 1.2,
                 ),
               ),
+            ),
+            ListTile(
+              leading: const Icon(
+                PhosphorIconsRegular.shareNetwork,
+                color: _labelColor,
+              ),
+              title: const Text(
+                'Share',
+                style: TextStyle(color: _labelColor),
+              ),
+              subtitle: const Text(
+                'QR code or invite for another phone',
+                style: TextStyle(color: _subtextColor, fontSize: 12),
+              ),
+              onTap: () => _shareCurrentLock(device),
             ),
             ListTile(
               leading: Icon(

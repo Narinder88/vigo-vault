@@ -1,10 +1,15 @@
+import 'dart:async';
+import 'dart:io' show Platform;
+
 import 'package:fitness_snack_lock/models/saved_lock.dart';
 import 'package:fitness_snack_lock/services/ble_service.dart';
+import 'package:fitness_snack_lock/services/hardware_mac_service.dart';
 import 'package:fitness_snack_lock/services/lock_invite.dart';
 import 'package:fitness_snack_lock/services/pairing_service.dart';
 import 'package:fitness_snack_lock/services/paired_lock_storage.dart';
 import 'package:fitness_snack_lock/services/saved_lock_storage.dart';
 import 'package:fitness_snack_lock/utils/lock_mac.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter_riverpod/legacy.dart';
 
 typedef SavedLocksState = ({
@@ -26,7 +31,12 @@ class SavedLocksNotifier extends StateNotifier<SavedLocksState> {
           activeLockId: null,
           primaryLockId: null,
           isLoading: true,
-        ));
+        )) {
+    SavedLockStorage.onLocksChanged = () {
+      if (!mounted) return;
+      unawaited(load());
+    };
+  }
 
   Future<void> load() async {
     if (state.locks.isEmpty) {
@@ -106,13 +116,31 @@ class SavedLocksNotifier extends StateNotifier<SavedLocksState> {
 
   SavedLock? lockById(String id) {
     for (final lock in state.locks) {
-      if (lock.id == id) return lock;
+      if (_lockMatches(lock, id)) return lock;
     }
     return null;
   }
 
-  List<String> get allDeviceIds =>
-      state.locks.map((lock) => lock.id).toList(growable: false);
+  bool _lockMatches(SavedLock lock, String raw) {
+    final query = raw.trim();
+    if (query.isEmpty) return false;
+    if (lock.id == query || lock.peripheralUuid == query) return true;
+    if (!LockMac.isMac(query)) return false;
+    final mac = LockMac.normalize(query);
+    if (LockMac.isMac(lock.id) && LockMac.normalize(lock.id) == mac) return true;
+    final stored = lock.hardwareMac;
+    return stored != null && LockMac.normalize(stored) == mac;
+  }
+
+  List<String> get allDeviceIds => [
+        for (final lock in state.locks) ...[
+          lock.id,
+          if (lock.hardwareMac != null && lock.hardwareMac!.isNotEmpty)
+            lock.hardwareMac!,
+          if (lock.peripheralUuid != null && lock.peripheralUuid!.isNotEmpty)
+            lock.peripheralUuid!,
+        ],
+      ];
 
   String? get resolvedPrimaryLockId => state.primaryLockId;
 
@@ -197,17 +225,49 @@ class SavedLocksNotifier extends StateNotifier<SavedLocksState> {
     _setLocks(locks);
   }
 
+  void replaceLock(SavedLock updated) {
+    final locks = <SavedLock>[];
+    var replaced = false;
+    for (final lock in state.locks) {
+      if (_lockMatches(lock, updated.id) ||
+          (updated.hardwareMac != null &&
+              _lockMatches(lock, updated.hardwareMac!)) ||
+          (updated.peripheralUuid != null &&
+              _lockMatches(lock, updated.peripheralUuid!))) {
+        locks.add(updated);
+        replaced = true;
+      } else {
+        locks.add(lock);
+      }
+    }
+    if (!replaced) locks.add(updated);
+    _setLocks(locks);
+  }
+
   Future<void> registerConnectedLock({
     required String deviceId,
     required String displayName,
     String? hardwareName,
+    String? hardwareMac,
+    String? peripheralUuid,
     int? batteryLevel,
     int? rssi,
   }) async {
     final id = LockMac.normalize(deviceId);
     await PairingService.registerLock(id);
 
-    final existing = lockById(id);
+    final normalizedMac = hardwareMac == null || !LockMac.isMac(hardwareMac)
+        ? (LockMac.isMac(id) ? id : null)
+        : LockMac.normalize(hardwareMac);
+    if (normalizedMac != null) {
+      await PairedLockStorage.aliasCredentials(
+        peripheralId: id,
+        hardwareMac: normalizedMac,
+      );
+    }
+
+    final existing = lockById(id) ??
+        (normalizedMac == null ? null : lockById(normalizedMac));
     final lock = (existing ??
             SavedLock(
               id: id,
@@ -215,23 +275,27 @@ class SavedLocksNotifier extends StateNotifier<SavedLocksState> {
               hardwareName: hardwareName,
             ))
         .copyWith(
+      id: id,
       displayName: displayName,
       hardwareName: hardwareName ?? existing?.hardwareName,
+      hardwareMac: normalizedMac ?? existing?.hardwareMac,
+      peripheralUuid: peripheralUuid ?? existing?.peripheralUuid,
       lastBatteryLevel: batteryLevel,
       lastRssi: rssi ?? existing?.lastRssi ?? -100,
       lastConnectedAt: DateTime.now(),
     );
 
+    if (existing != null && existing.id != lock.id) {
+      await SavedLockStorage.removeLock(existing.id);
+    }
     await SavedLockStorage.upsertLock(lock);
     await SavedLockStorage.setActiveLockId(id);
 
-    final locks = [...state.locks];
-    final index = locks.indexWhere((entry) => entry.id == id);
-    if (index >= 0) {
-      locks[index] = lock;
-    } else {
-      locks.add(lock);
-    }
+    final locks = [
+      for (final entry in state.locks)
+        if (entry.id != id && entry.id != existing?.id) entry,
+      lock,
+    ];
 
     var primaryLockId = state.primaryLockId;
     if (primaryLockId == null ||
@@ -248,26 +312,46 @@ class SavedLocksNotifier extends StateNotifier<SavedLocksState> {
     );
   }
 
-  /// Saves a shared lock locally. Does not connect or factory-reset the padlock.
+  /// Saves a shared lock locally. On iOS, scans for the hardware MAC and
+  /// binds the CoreBluetooth peripheral UUID before the lock is stored.
   Future<void> importSharedLock(LockInvite invite) async {
-    final id = LockMac.normalize(invite.macAddress);
-    await PairedLockStorage.pair(id);
-    await PairedLockStorage.saveSecretKey(id, invite.aesKey);
-    await PairedLockStorage.savePassword(id, invite.password);
+    final mac = LockMac.normalize(invite.macAddress);
+    var connectId = mac;
+    String? peripheralUuid;
+    if (!kIsWeb && Platform.isIOS) {
+      peripheralUuid = await HardwareMacService.findPeripheralUuid(mac);
+      if (peripheralUuid != null && peripheralUuid.isNotEmpty) {
+        connectId = peripheralUuid;
+      }
+    }
 
-    final existing = lockById(id);
+    await PairedLockStorage.pair(connectId);
+    await PairedLockStorage.pair(mac);
+    await PairedLockStorage.saveSecretKey(connectId, invite.aesKey);
+    await PairedLockStorage.savePassword(connectId, invite.password);
+    await PairedLockStorage.aliasCredentials(
+      peripheralId: connectId,
+      hardwareMac: mac,
+    );
+
+    final existing = lockById(connectId) ?? lockById(mac);
     final lock = (existing ??
             SavedLock(
-              id: id,
+              id: connectId,
               displayName: invite.name,
             ))
-        .copyWith(displayName: invite.name);
+        .copyWith(
+      id: connectId,
+      displayName: invite.name,
+      hardwareMac: mac,
+      peripheralUuid: peripheralUuid ?? existing?.peripheralUuid,
+    );
 
     await addOrUpdateLock(lock);
 
     if (state.primaryLockId == null ||
         !state.locks.any((entry) => entry.id == state.primaryLockId)) {
-      await setPrimaryLockId(id);
+      await setPrimaryLockId(connectId);
     }
   }
 
@@ -289,19 +373,35 @@ class SavedLocksNotifier extends StateNotifier<SavedLocksState> {
   }
 
   Future<void> removeLock(String lockId) async {
+    final existing = lockById(lockId);
     await PairingService.unpairLock(lockId);
+    if (existing?.hardwareMac != null) {
+      await PairingService.unpairLock(existing!.hardwareMac!);
+    }
+    if (existing?.peripheralUuid != null &&
+        existing!.peripheralUuid != lockId) {
+      await PairingService.unpairLock(existing.peripheralUuid!);
+    }
     BleService.clearDeviceCredentials(lockId);
-    await SavedLockStorage.removeLock(lockId);
+    if (existing?.hardwareMac != null) {
+      BleService.clearDeviceCredentials(existing!.hardwareMac!);
+    }
+    await SavedLockStorage.removeLock(existing?.id ?? lockId);
 
-    final locks =
-        state.locks.where((entry) => entry.id != lockId).toList(growable: false);
-    final activeLockId =
-        state.activeLockId == lockId ? null : state.activeLockId;
-    final primaryLockId = state.primaryLockId == lockId
+    final removedId = existing?.id ?? lockId;
+    final locks = state.locks
+        .where((entry) => entry.id != removedId && entry.id != lockId)
+        .toList(growable: false);
+    final activeLockId = state.activeLockId == removedId ||
+            state.activeLockId == lockId
+        ? null
+        : state.activeLockId;
+    final primaryLockId = state.primaryLockId == removedId ||
+            state.primaryLockId == lockId
         ? _resolvePrimaryLockId(locks)
         : state.primaryLockId;
 
-    if (state.primaryLockId == lockId) {
+    if (state.primaryLockId == removedId || state.primaryLockId == lockId) {
       await SavedLockStorage.setPrimaryLockId(primaryLockId);
       if (primaryLockId != null) {
         await PairedLockStorage.syncLockToWatch(primaryLockId);

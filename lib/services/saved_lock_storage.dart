@@ -6,6 +6,10 @@ import 'package:fitness_snack_lock/utils/lock_mac.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class SavedLockStorage {
+  /// Fired after a lock's connection id changes from a hardware MAC to a
+  /// CoreBluetooth peripheral UUID. The saved-locks provider reloads from this.
+  static void Function()? onLocksChanged;
+
   static const _locksKey = 'smart_lock_saved_locks';
   static const _activeLockIdKey = 'smart_lock_active_lock_id';
   static const _primaryLockIdKey = 'smart_lock_primary_lock_id';
@@ -160,5 +164,54 @@ class SavedLockStorage {
 
   static Future<void> clearLastDeviceId() async {
     await setActiveLockId(null);
+  }
+
+  /// On iOS, point a lock that was stored under its hardware MAC at the
+  /// CoreBluetooth peripheral UUID while keeping [hardwareMac].
+  static Future<void> bindPeripheralUuid({
+    required String hardwareMac,
+    required String peripheralUuid,
+  }) async {
+    final mac = LockMac.normalize(hardwareMac);
+    final uuid = peripheralUuid.trim();
+    if (!LockMac.isMac(mac) || uuid.isEmpty || uuid == mac) return;
+
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_locksKey);
+    if (raw == null || raw.isEmpty) return;
+
+    final decoded = jsonDecode(raw) as List<dynamic>;
+    final locks = decoded
+        .map((entry) => SavedLock.fromJson(entry as Map<String, dynamic>))
+        .toList();
+
+    final next = <String, SavedLock>{};
+    for (final lock in locks) {
+      final lockMac = lock.hardwareMac == null
+          ? null
+          : LockMac.normalize(lock.hardwareMac!);
+      final matches = lock.id == mac ||
+          lock.id == uuid ||
+          lock.peripheralUuid == uuid ||
+          lockMac == mac;
+      if (!matches) {
+        next[lock.id] = lock;
+        continue;
+      }
+      final updated = lock.copyWith(
+        id: lock.id == mac ? uuid : lock.id,
+        hardwareMac: mac,
+        peripheralUuid: uuid,
+      );
+      next[updated.id] = updated;
+    }
+
+    await saveLocks(next.values.toList());
+    for (final key in [_activeLockIdKey, _primaryLockIdKey]) {
+      if (prefs.getString(key) == mac) {
+        await prefs.setString(key, uuid);
+      }
+    }
+    onLocksChanged?.call();
   }
 }

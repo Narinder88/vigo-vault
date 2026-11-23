@@ -1,13 +1,37 @@
+import 'package:fitness_snack_lock/models/saved_lock.dart';
+import 'package:fitness_snack_lock/providers/saved_locks_provider.dart';
+import 'package:fitness_snack_lock/services/lock_invite.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:share_plus/share_plus.dart';
 
 Future<void> showShareLockDialog({
   required BuildContext context,
-  required String lockName,
-  required String inviteCode,
-}) {
+  required SavedLock lock,
+}) async {
+  final prepared = await LockInvite.encode(lock);
+  if (!context.mounted) return;
+
+  if (prepared == null) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text(
+          'This lock does not have a shareable MAC address and key yet.',
+        ),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+    return;
+  }
+
+  ProviderScope.containerOf(context)
+      .read(savedLocksProvider.notifier)
+      .replaceLock(prepared.lock);
+
+  final inviteCode = prepared.code;
+  final lockName = prepared.lock.displayName;
   return showDialog<void>(
     context: context,
     builder: (dialogContext) {

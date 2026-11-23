@@ -4,6 +4,7 @@ import 'dart:io' show Platform;
 import 'package:fitness_snack_lock/services/ble_debug_log.dart';
 import 'package:fitness_snack_lock/services/data_service.dart';
 import 'package:fitness_snack_lock/services/pairing_service.dart';
+import 'package:fitness_snack_lock/services/hardware_mac_service.dart';
 import 'package:fitness_snack_lock/services/paired_lock_storage.dart';
 import 'package:fitness_snack_lock/services/saved_lock_storage.dart';
 import 'package:fitness_snack_lock/utils/lock_mac.dart';
@@ -1714,8 +1715,60 @@ class BleService {
     // Service discovery runs in [connectWithRetry] immediately after connect.
   }
 
-  static Future<bool> connect(String deviceId) {
-    final id = LockMac.normalize(deviceId);
+  static Future<String> _resolveConnectionId(String deviceId) async {
+    final normalized = LockMac.normalize(deviceId);
+    if (kIsWeb || !Platform.isIOS || !LockMac.isMac(normalized)) {
+      return normalized;
+    }
+
+    final known = await _storedIosPeripheralId(normalized);
+    if (known != null) return known;
+
+    final uuid = await HardwareMacService.findPeripheralUuid(normalized);
+    if (uuid == null || uuid.isEmpty || LockMac.isMac(uuid)) {
+      return normalized;
+    }
+
+    await PairedLockStorage.aliasCredentials(
+      peripheralId: uuid,
+      hardwareMac: normalized,
+    );
+    await SavedLockStorage.bindPeripheralUuid(
+      hardwareMac: normalized,
+      peripheralUuid: uuid,
+    );
+    return uuid;
+  }
+
+  /// Peripheral UUID already bound to [mac], so a later unlock does not scan again.
+  static Future<String?> _storedIosPeripheralId(String mac) async {
+    final cached = HardwareMacService.cachedRemoteIdForMac(mac);
+    if (cached != null && cached.isNotEmpty && !LockMac.isMac(cached)) {
+      return cached;
+    }
+
+    try {
+      final locks = await SavedLockStorage.loadLocks();
+      for (final lock in locks) {
+        final storedMac = lock.hardwareMac == null
+            ? null
+            : LockMac.normalize(lock.hardwareMac!);
+        final idMatchesMac =
+            LockMac.isMac(lock.id) && LockMac.normalize(lock.id) == mac;
+        if (storedMac != mac && !idMatchesMac) continue;
+
+        final uuid = lock.peripheralUuid;
+        if (uuid != null && uuid.isNotEmpty && !LockMac.isMac(uuid)) {
+          return uuid;
+        }
+        if (!LockMac.isMac(lock.id)) return lock.id;
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  static Future<bool> connect(String deviceId) async {
+    final id = await _resolveConnectionId(deviceId);
     return runExclusive(() async {
       await _disconnectSavedLocksBeforeConnect(id);
       return _connectImpl(id);
@@ -1723,8 +1776,8 @@ class BleService {
   }
 
   /// Dashboard warm-up. autoConnect stays off so Android still calls gatt.close().
-  static Future<bool> connectForBackgroundWarmup(String deviceId) {
-    final id = LockMac.normalize(deviceId);
+  static Future<bool> connectForBackgroundWarmup(String deviceId) async {
+    final id = await _resolveConnectionId(deviceId);
     return runExclusive(() async {
       try {
         if (isDeviceConnected(id)) {
@@ -2853,8 +2906,8 @@ class BleService {
   }
 
   /// Fast single-attempt connect + handshake for unlock/toggle flows.
-  static Future<bool> connectForUnlock(String deviceId) {
-    final id = LockMac.normalize(deviceId);
+  static Future<bool> connectForUnlock(String deviceId) async {
+    final id = await _resolveConnectionId(deviceId);
     return runExclusive(() async {
       await _disconnectSavedLocksBeforeConnect(id);
       try {
@@ -3002,8 +3055,8 @@ class BleService {
   }
 
   /// Build-195 phone foreground unlock: connect, handshake via [_connectImpl], unlock, release.
-  static Future<bool> connectAndUnLock(String deviceId) {
-    final id = LockMac.normalize(deviceId);
+  static Future<bool> connectAndUnLock(String deviceId) async {
+    final id = await _resolveConnectionId(deviceId);
     return runExclusive(() async {
       _activeUnlockProfile = _BleUnlockProfile.phone;
       try {
@@ -3028,8 +3081,8 @@ class BleService {
   }
 
   /// Watch bridge unlock: fast-path GATT reuse, settle delays, tuned iOS writes.
-  static Future<bool> unlockLock(String deviceId) {
-    final id = LockMac.normalize(deviceId);
+  static Future<bool> unlockLock(String deviceId) async {
+    final id = await _resolveConnectionId(deviceId);
     return runExclusive(() async {
       _activeUnlockProfile = _BleUnlockProfile.watch;
       try {

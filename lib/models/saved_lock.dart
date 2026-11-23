@@ -1,8 +1,12 @@
+import 'package:fitness_snack_lock/utils/lock_mac.dart';
+
 class SavedLock {
   const SavedLock({
     required this.id,
     required this.displayName,
     this.hardwareName,
+    this.hardwareMac,
+    this.peripheralUuid,
     this.lastBatteryLevel,
     this.lastRssi = -100,
     this.lastConnectedAt,
@@ -11,14 +15,33 @@ class SavedLock {
   final String id;
   final String displayName;
   final String? hardwareName;
+
+  /// 6-byte lock address (`AA:BB:CC:DD:EE:FF`). On Android this matches [id].
+  final String? hardwareMac;
+
+  /// CoreBluetooth peripheral UUID. On iOS this matches [id] once the lock
+  /// has been seen. Android leaves this empty.
+  final String? peripheralUuid;
   final int? lastBatteryLevel;
   final int lastRssi;
   final DateTime? lastConnectedAt;
+
+  /// Hardware MAC when it is already known, including Android ids that are MACs.
+  String? get resolvedHardwareMac {
+    final stored = hardwareMac?.trim();
+    if (stored != null && stored.isNotEmpty && LockMac.isMac(stored)) {
+      return LockMac.normalize(stored);
+    }
+    if (LockMac.isMac(id)) return LockMac.normalize(id);
+    return null;
+  }
 
   SavedLock copyWith({
     String? id,
     String? displayName,
     String? hardwareName,
+    String? hardwareMac,
+    String? peripheralUuid,
     int? lastBatteryLevel,
     int? lastRssi,
     DateTime? lastConnectedAt,
@@ -28,6 +51,8 @@ class SavedLock {
       id: id ?? this.id,
       displayName: displayName ?? this.displayName,
       hardwareName: hardwareName ?? this.hardwareName,
+      hardwareMac: hardwareMac ?? this.hardwareMac,
+      peripheralUuid: peripheralUuid ?? this.peripheralUuid,
       lastBatteryLevel:
           clearBattery ? null : (lastBatteryLevel ?? this.lastBatteryLevel),
       lastRssi: lastRssi ?? this.lastRssi,
@@ -40,6 +65,8 @@ class SavedLock {
       'id': id,
       'displayName': displayName,
       'hardwareName': hardwareName,
+      'hardwareMac': hardwareMac,
+      'peripheralUuid': peripheralUuid,
       'lastBatteryLevel': lastBatteryLevel,
       'lastRssi': lastRssi,
       'lastConnectedAt': lastConnectedAt?.toIso8601String(),
@@ -52,6 +79,8 @@ class SavedLock {
       id: json['id'] as String,
       displayName: json['displayName'] as String? ?? 'Smart Lock',
       hardwareName: json['hardwareName'] as String?,
+      hardwareMac: json['hardwareMac'] as String?,
+      peripheralUuid: json['peripheralUuid'] as String?,
       lastBatteryLevel: json['lastBatteryLevel'] as int?,
       lastRssi: json['lastRssi'] as int? ?? -100,
       lastConnectedAt: lastConnectedRaw == null

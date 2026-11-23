@@ -42,7 +42,17 @@ class PairedLockStorage {
     await prefs.setBool(_fallbackMigratedKey, true);
   }
 
+  static const _idAliasKey = 'lock_id_aliases';
+
   static Future<bool> isPaired(String deviceId) async {
+    if (deviceId.isEmpty) return false;
+    if (await _isPairedDirect(deviceId)) return true;
+    final alias = await linkedDeviceId(deviceId);
+    if (alias == null || alias == deviceId) return false;
+    return _isPairedDirect(alias);
+  }
+
+  static Future<bool> _isPairedDirect(String deviceId) async {
     if (deviceId.isEmpty) return false;
 
     if (_useNativeSecureStorage) {
@@ -109,6 +119,14 @@ class PairedLockStorage {
 
   /// Reads the per-lock AES-128 master key from secure storage (Keychain / EncryptedSharedPreferences).
   static Future<String?> getSecretKey(String deviceId) async {
+    final direct = await _readSecretKey(deviceId);
+    if (direct != null && direct.trim().isNotEmpty) return direct;
+    final alias = await linkedDeviceId(deviceId);
+    if (alias == null || alias == deviceId) return direct;
+    return _readSecretKey(alias);
+  }
+
+  static Future<String?> _readSecretKey(String deviceId) async {
     if (deviceId.isEmpty) return null;
 
     if (_useNativeSecureStorage) {
@@ -202,6 +220,14 @@ class PairedLockStorage {
   }
 
   static Future<String?> getPassword(String deviceId) async {
+    final direct = await _readPassword(deviceId);
+    if (direct != null && direct.trim().isNotEmpty) return direct;
+    final alias = await linkedDeviceId(deviceId);
+    if (alias == null || alias == deviceId) return direct;
+    return _readPassword(alias);
+  }
+
+  static Future<String?> _readPassword(String deviceId) async {
     if (deviceId.isEmpty) return null;
 
     if (_useNativeSecureStorage) {
@@ -328,5 +354,84 @@ class PairedLockStorage {
   static Future<void> _saveFallbackIds(Set<String> ids) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setStringList(_fallbackKey, ids.toList());
+  }
+
+  /// Stores the AES key and password under both the peripheral id and the MAC.
+  static Future<void> aliasCredentials({
+    required String peripheralId,
+    required String hardwareMac,
+  }) async {
+    final peripheral = peripheralId.trim();
+    final mac = LockMac.normalize(hardwareMac);
+    if (peripheral.isEmpty || !LockMac.isMac(mac) || peripheral == mac) return;
+
+    await _rememberLink(peripheral, mac);
+
+    final secret = _firstNonEmpty([
+      await _readSecretKey(peripheral),
+      await _readSecretKey(mac),
+    ]);
+    final password = _firstNonEmpty([
+      await _readPassword(peripheral),
+      await _readPassword(mac),
+    ]);
+
+    if (secret != null && isValidAesKeyHex(sanitizeAesKeyHex(secret))) {
+      final normalized = sanitizeAesKeyHex(secret);
+      await saveSecretKey(peripheral, normalized);
+      await saveSecretKey(mac, normalized);
+    }
+    if (password != null && isValidPasswordHex(sanitizePasswordHex(password))) {
+      final normalized = sanitizePasswordHex(password);
+      await savePassword(peripheral, normalized);
+      await savePassword(mac, normalized);
+    }
+
+    if (await _isPairedDirect(peripheral) || await _isPairedDirect(mac)) {
+      await pair(peripheral);
+      await pair(mac);
+    }
+  }
+
+  static Future<String?> linkedDeviceId(String deviceId) async {
+    if (deviceId.isEmpty) return null;
+    final links = await _loadLinks();
+    final direct = links[deviceId];
+    if (direct != null && direct.isNotEmpty) return direct;
+    final normalized = LockMac.normalize(deviceId);
+    return links[normalized];
+  }
+
+  static Future<void> _rememberLink(String peripheralId, String hardwareMac) async {
+    final links = await _loadLinks();
+    links[peripheralId] = hardwareMac;
+    links[hardwareMac] = peripheralId;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(
+      _idAliasKey,
+      links.entries.map((entry) => '${entry.key}\n${entry.value}').join('\n'),
+    );
+  }
+
+  static Future<Map<String, String>> _loadLinks() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_idAliasKey);
+    if (raw == null || raw.isEmpty) return {};
+    final lines = raw.split('\n');
+    final links = <String, String>{};
+    for (var index = 0; index + 1 < lines.length; index += 2) {
+      final key = lines[index].trim();
+      final value = lines[index + 1].trim();
+      if (key.isEmpty || value.isEmpty) continue;
+      links[key] = value;
+    }
+    return links;
+  }
+
+  static String? _firstNonEmpty(List<String?> values) {
+    for (final value in values) {
+      if (value != null && value.trim().isNotEmpty) return value.trim();
+    }
+    return null;
   }
 }
