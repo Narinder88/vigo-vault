@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:ui' show lerpDouble;
 
 import 'package:fitness_snack_lock/constants/app_branding.dart';
+import 'package:fitness_snack_lock/features/device/app_info_sheet.dart';
 import 'package:fitness_snack_lock/features/device/device_scanning_page/device_scanning_page.dart';
 import 'package:fitness_snack_lock/features/device/share_lock_dialog.dart';
 import 'package:fitness_snack_lock/features/lock/home_page.dart';
@@ -1071,6 +1072,20 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
               fontWeight: FontWeight.w600,
             ),
           ),
+          actions: [
+            IconButton(
+              tooltip: 'Info',
+              onPressed: () {
+                showModalBottomSheet<void>(
+                  context: context,
+                  backgroundColor: _cardColor,
+                  showDragHandle: true,
+                  builder: (context) => const AppInfoSheet(),
+                );
+              },
+              icon: const Icon(Icons.info_outline, color: _labelColor),
+            ),
+          ],
         ),
         floatingActionButton: FloatingActionButton.extended(
           onPressed: canAddLock ? _addLock : null,
