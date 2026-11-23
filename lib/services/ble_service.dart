@@ -1842,6 +1842,11 @@ class BleService {
       );
       if (accepted) {
         debugPrint('Shared lock handshake accepted $remoteId');
+        if (FlutterBluePlus.isScanningNow) {
+          try {
+            await FlutterBluePlus.stopScan();
+          } catch (_) {}
+        }
         return remoteId;
       }
       debugPrint('Shared lock handshake rejected $remoteId');
@@ -1864,14 +1869,41 @@ class BleService {
     final discovered = <ScanResult>[];
     final subscription = FlutterBluePlus.onScanResults.listen(discovered.addAll);
     try {
-      await _startScanAndWait(
+      if (FlutterBluePlus.isScanningNow) {
+        await FlutterBluePlus.stopScan();
+      }
+      await FlutterBluePlus.startScan(
         withServices: [_lockServiceUuid],
         timeout: _sharedLockScanTimeout,
       );
+      final deadline = DateTime.now().add(_sharedLockScanTimeout);
+      DateTime? firstMatchAt;
+      while (DateTime.now().isBefore(deadline)) {
+        final rankedSoFar = _rankedUnsavedRemoteIds(
+          discovered,
+          target,
+          savedRemoteIds,
+        );
+        if (rankedSoFar.isNotEmpty) {
+          firstMatchAt ??= DateTime.now();
+          if (DateTime.now().difference(firstMatchAt) >=
+              const Duration(seconds: 2)) {
+            break;
+          }
+        } else if (!FlutterBluePlus.isScanningNow && discovered.isNotEmpty) {
+          break;
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+      }
     } catch (error) {
       debugPrint('Shared lock scan failed for "$target": $error');
     } finally {
       await subscription.cancel();
+      if (FlutterBluePlus.isScanningNow) {
+        try {
+          await FlutterBluePlus.stopScan();
+        } catch (_) {}
+      }
     }
 
     final ranked = _rankedUnsavedRemoteIds(discovered, target, savedRemoteIds);
@@ -1883,6 +1915,10 @@ class BleService {
     return ranked;
   }
 
+  static const Duration _inviteHandshakeBudget = Duration(seconds: 5);
+
+  /// One candidate only. Connect and the 06 01 handshake share a 5-second
+  /// budget so a GATT timeout cannot stall the home screen for ~30 seconds.
   static Future<bool> _handshakeInviteCredentials(
     String remoteId, {
     required String aesKey,
@@ -1892,15 +1928,18 @@ class BleService {
     return runExclusive(() async {
       _handshakeEncryptKeyOverride = aesKey;
       _handshakePasswordOverride = password;
+      final device = BluetoothDevice.fromId(id);
       try {
-        await _disconnectSavedLocksBeforeConnect(id);
-        final connected = await _attemptConnect(
-          id,
-          handshakeTimeout: const Duration(seconds: 12),
-          skipProvisioning: true,
+        final accepted = await _inviteConnectAndHandshake(id, device).timeout(
+          _inviteHandshakeBudget,
+          onTimeout: () => false,
         );
-        if (!connected) {
+        if (!accepted) {
           clearDeviceCredentials(id);
+          await _abortPendingConnect(device);
+          try {
+            await _forceReleaseDevice(id);
+          } catch (_) {}
           return false;
         }
         cacheDeviceEncryptKey(id, aesKey);
@@ -1909,6 +1948,7 @@ class BleService {
       } catch (error) {
         debugPrint('Shared lock handshake error for $id: $error');
         clearDeviceCredentials(id);
+        await _abortPendingConnect(device);
         try {
           await _forceReleaseDevice(id);
         } catch (_) {}
@@ -1918,6 +1958,57 @@ class BleService {
         _handshakePasswordOverride = null;
       }
     });
+  }
+
+  static Future<bool> _inviteConnectAndHandshake(
+    String id,
+    BluetoothDevice device,
+  ) async {
+    if (FlutterBluePlus.isScanningNow) {
+      try {
+        await FlutterBluePlus.stopScan();
+      } catch (_) {}
+    }
+
+    final started = DateTime.now();
+    Duration remaining() {
+      final left = _inviteHandshakeBudget - DateTime.now().difference(started);
+      return left.isNegative ? Duration.zero : left;
+    }
+
+    final connectBudget = remaining();
+    if (connectBudget == Duration.zero) return false;
+    try {
+      await device
+          .connect(
+            timeout: connectBudget,
+            license: License.nonprofit,
+            autoConnect: false,
+          )
+          .timeout(connectBudget);
+    } on TimeoutException {
+      await _abortPendingConnect(device);
+      return false;
+    }
+    if (!device.isConnected) return false;
+
+    final handshakeBudget = remaining();
+    if (handshakeBudget == Duration.zero) {
+      await _abortPendingConnect(device);
+      return false;
+    }
+    final token = await requestToken(id, ignoreConnect: true).timeout(
+      handshakeBudget,
+      onTimeout: () => null,
+    );
+    if (!_isValidToken(token)) {
+      await _safeDisconnect(device);
+      return false;
+    }
+    _deviceTokens[id] = token!;
+    _activeDeviceId = id;
+    _rememberConnectedDevice(id, device);
+    return true;
   }
 
   static List<String> _rankedUnsavedRemoteIds(

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io' show Platform;
 
 import 'package:fitness_snack_lock/models/saved_lock.dart';
@@ -31,10 +32,20 @@ class SavedLocksNotifier extends StateNotifier<SavedLocksState> {
           isLoading: true,
         ));
 
+  var _importInProgress = false;
+
   Future<void> load() async {
-    if (state.locks.isEmpty) {
+    final existing = state.locks;
+    if (existing.isNotEmpty || _importInProgress) {
       state = (
-        locks: state.locks,
+        locks: existing,
+        activeLockId: state.activeLockId,
+        primaryLockId: state.primaryLockId,
+        isLoading: false,
+      );
+    } else {
+      state = (
+        locks: existing,
         activeLockId: state.activeLockId,
         primaryLockId: state.primaryLockId,
         isLoading: true,
@@ -42,6 +53,15 @@ class SavedLocksNotifier extends StateNotifier<SavedLocksState> {
     }
 
     final locks = await SavedLockStorage.loadLocks();
+    if (_importInProgress && locks.isEmpty && state.locks.isNotEmpty) {
+      state = (
+        locks: state.locks,
+        activeLockId: state.activeLockId,
+        primaryLockId: state.primaryLockId,
+        isLoading: false,
+      );
+      return;
+    }
     await PairingService.migrateExistingLocks(locks.map((lock) => lock.id));
     final activeLockId = await SavedLockStorage.getActiveLockId();
     final storedPrimaryLockId = await SavedLockStorage.getPrimaryLockId();
@@ -61,8 +81,11 @@ class SavedLocksNotifier extends StateNotifier<SavedLocksState> {
       await SavedLockStorage.setPrimaryLockId(primaryLockId);
     }
 
+    final nextLocks = _importInProgress
+        ? _unionLocks(loaded: locks, current: state.locks)
+        : locks;
     state = (
-      locks: locks,
+      locks: nextLocks,
       activeLockId: activeLockId,
       primaryLockId: primaryLockId,
       isLoading: false,
@@ -92,6 +115,19 @@ class SavedLocksNotifier extends StateNotifier<SavedLocksState> {
     }
 
     return null;
+  }
+
+  List<SavedLock> _unionLocks({
+    required List<SavedLock> loaded,
+    required List<SavedLock> current,
+  }) {
+    final merged = [...loaded];
+    for (final lock in current) {
+      if (!merged.any((entry) => entry.id == lock.id)) {
+        merged.add(lock);
+      }
+    }
+    return merged;
   }
 
   void _setLocks(
@@ -271,12 +307,17 @@ class SavedLocksNotifier extends StateNotifier<SavedLocksState> {
   /// pads with that advertised name, closest first, and save only the remoteId
   /// whose handshake accepts the invite AES key.
   Future<void> importSharedLock(LockInvite invite) async {
-    final mac = LockMac.normalize(invite.macAddress);
-    if (!kIsWeb && Platform.isAndroid && LockMac.isHardwareMac(mac)) {
-      await _importByHardwareMac(mac, invite);
-      return;
+    _importInProgress = true;
+    try {
+      final mac = LockMac.normalize(invite.macAddress);
+      if (!kIsWeb && Platform.isAndroid && LockMac.isHardwareMac(mac)) {
+        await _importByHardwareMac(mac, invite);
+        return;
+      }
+      await _importByAdvertisedName(invite);
+    } finally {
+      _importInProgress = false;
     }
-    await _importByAdvertisedName(invite);
   }
 
   Future<void> _importByHardwareMac(String id, LockInvite invite) async {
@@ -320,21 +361,42 @@ class SavedLocksNotifier extends StateNotifier<SavedLocksState> {
     }
     debugPrint('Import shared lock by name ${invite.name} -> $connectId');
 
-    await PairedLockStorage.pair(connectId);
-    await PairedLockStorage.saveSecretKey(connectId, invite.aesKey);
-    await PairedLockStorage.savePassword(connectId, invite.password);
-
     final lock = SavedLock(
       id: connectId,
       displayName: invite.name,
       hardwareName: invite.name,
     );
-    await addOrUpdateLock(lock);
+    _publishLock(lock);
 
-    if (state.primaryLockId == null ||
-        !state.locks.any((entry) => entry.id == state.primaryLockId)) {
-      await setPrimaryLockId(connectId);
+    await PairedLockStorage.pair(connectId);
+    await PairedLockStorage.saveSecretKey(connectId, invite.aesKey);
+    await PairedLockStorage.savePassword(connectId, invite.password);
+    await SavedLockStorage.upsertLock(lock);
+    if (state.primaryLockId == connectId) {
+      await SavedLockStorage.setPrimaryLockId(connectId);
+      unawaited(PairedLockStorage.syncLockToWatch(connectId));
     }
+  }
+
+  void _publishLock(SavedLock lock) {
+    final locks = [...state.locks];
+    final index = locks.indexWhere((entry) => entry.id == lock.id);
+    if (index >= 0) {
+      locks[index] = lock;
+    } else {
+      locks.add(lock);
+    }
+    var primaryLockId = state.primaryLockId;
+    if (primaryLockId == null ||
+        !locks.any((entry) => entry.id == primaryLockId)) {
+      primaryLockId = lock.id;
+    }
+    state = (
+      locks: locks,
+      activeLockId: state.activeLockId,
+      primaryLockId: primaryLockId,
+      isLoading: false,
+    );
   }
 
   Future<void> renameLock(String lockId, String name) async {

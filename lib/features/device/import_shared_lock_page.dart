@@ -79,7 +79,7 @@ class _ImportSharedLockPageState extends ConsumerState<ImportSharedLockPage> {
     setState(() {
       _error = null;
       _status = discoverByName
-          ? 'Looking for a nearby ${invite.name} lock...'
+          ? 'Verifying nearby ${invite.name} lock...'
           : 'Saving...';
     });
 
@@ -94,13 +94,15 @@ class _ImportSharedLockPageState extends ConsumerState<ImportSharedLockPage> {
     try {
       await ref.read(savedLocksProvider.notifier).importSharedLock(invite);
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
+      final messenger = ScaffoldMessenger.of(context);
+      final navigator = Navigator.of(context);
+      messenger.showSnackBar(
         const SnackBar(
           content: Text('Lock imported successfully'),
           behavior: SnackBarBehavior.floating,
         ),
       );
-      Navigator.of(context).pop(true);
+      navigator.popUntil((route) => route.isFirst);
     } on SharedLockNotFound catch (error) {
       await _importFailed(error.message, reopenScanner: stopScanner);
     } catch (_) {
@@ -138,7 +140,28 @@ class _ImportSharedLockPageState extends ConsumerState<ImportSharedLockPage> {
         foregroundColor: Colors.black,
         title: const Text('Import Shared Lock'),
       ),
-      body: ListView(
+      body: _importing
+          ? Center(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const CircularProgressIndicator(color: Colors.black),
+                    const SizedBox(height: 24),
+                    Text(
+                      _status ?? 'Verifying nearby lock...',
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        color: Colors.black,
+                        fontSize: 16,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            )
+          : ListView(
         padding: const EdgeInsets.all(16),
         children: [
           const Text(

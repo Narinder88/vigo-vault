@@ -1079,7 +1079,7 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
           icon: const Icon(PhosphorIconsRegular.plus),
           label: const Text('Add Lock'),
         ),
-        body: locksState.isLoading
+        body: locksState.isLoading && locks.isEmpty
             ? const Center(
                 child: CircularProgressIndicator(color: _accentColor),
               )
