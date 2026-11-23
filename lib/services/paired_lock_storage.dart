@@ -44,9 +44,12 @@ class PairedLockStorage {
 
   static const _idAliasKey = 'lock_id_aliases';
 
+  static bool get _aliasIds => !kIsWeb && Platform.isIOS;
+
   static Future<bool> isPaired(String deviceId) async {
     if (deviceId.isEmpty) return false;
     if (await _isPairedDirect(deviceId)) return true;
+    if (!_aliasIds) return false;
     final alias = await linkedDeviceId(deviceId);
     if (alias == null || alias == deviceId) return false;
     return _isPairedDirect(alias);
@@ -120,6 +123,7 @@ class PairedLockStorage {
   /// Reads the per-lock AES-128 master key from secure storage (Keychain / EncryptedSharedPreferences).
   static Future<String?> getSecretKey(String deviceId) async {
     final direct = await _readSecretKey(deviceId);
+    if (!_aliasIds) return direct;
     if (direct != null && direct.trim().isNotEmpty) return direct;
     final alias = await linkedDeviceId(deviceId);
     if (alias == null || alias == deviceId) return direct;
@@ -221,6 +225,7 @@ class PairedLockStorage {
 
   static Future<String?> getPassword(String deviceId) async {
     final direct = await _readPassword(deviceId);
+    if (!_aliasIds) return direct;
     if (direct != null && direct.trim().isNotEmpty) return direct;
     final alias = await linkedDeviceId(deviceId);
     if (alias == null || alias == deviceId) return direct;
@@ -361,6 +366,7 @@ class PairedLockStorage {
     required String peripheralId,
     required String hardwareMac,
   }) async {
+    if (!_aliasIds) return;
     final peripheral = peripheralId.trim();
     final mac = LockMac.normalize(hardwareMac);
     if (peripheral.isEmpty || !LockMac.isMac(mac) || peripheral == mac) return;

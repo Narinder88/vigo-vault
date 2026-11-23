@@ -24,13 +24,21 @@ class LockInvite {
   ///
   /// [macAddress] is the 6-byte hardware MAC, never a CoreBluetooth UUID.
   static Future<({String code, SavedLock lock})?> encode(SavedLock lock) async {
-    final shareable = await HardwareMacService.persistForLock(lock);
+    final shareable = HardwareMacService.usesPeripheralUuid
+        ? await HardwareMacService.persistForLock(lock)
+        : lock;
     if (shareable == null) return null;
 
-    final macAddress = LockMac.normalize(shareable.hardwareMac ?? shareable.id);
+    final macAddress = LockMac.normalize(
+      HardwareMacService.usesPeripheralUuid
+          ? (shareable.hardwareMac ?? shareable.id)
+          : shareable.id,
+    );
     if (!LockMac.isMac(macAddress)) return null;
 
-    final credentialId = shareable.peripheralUuid ?? shareable.id;
+    final credentialId = HardwareMacService.usesPeripheralUuid
+        ? (shareable.peripheralUuid ?? shareable.id)
+        : macAddress;
     final aesKey = PairedLockStorage.sanitizeAesKeyHex(
       await PairedLockStorage.ensureSecretKey(credentialId),
     );

@@ -61,8 +61,10 @@ class _DeviceScanningPageState extends ConsumerState<DeviceScanningPage> {
 
     subscription = FlutterBluePlus.onScanResults.listen(
       (results) {
-        for (final result in results) {
-          HardwareMacService.remember(result);
+        if (HardwareMacService.usesPeripheralUuid) {
+          for (final result in results) {
+            HardwareMacService.remember(result);
+          }
         }
         if (_connectSessionActive || !mounted) return;
 
@@ -177,11 +179,15 @@ class _DeviceScanningPageState extends ConsumerState<DeviceScanningPage> {
     final deviceId = scanResult.device.remoteId.str;
     final displayName = LockConnectionHelper.defaultDisplayName(scanResult.device);
     final hardwareName = LockConnectionHelper.hardwareName(scanResult.device);
-    final hardwareMac = HardwareMacService.macFromAdvertisement(
-          scanResult.advertisementData,
-        ) ??
-        (LockMac.isMac(deviceId) ? LockMac.normalize(deviceId) : null);
-    final peripheralUuid = LockMac.isMac(deviceId) ? null : deviceId;
+    final hardwareMac = HardwareMacService.usesPeripheralUuid
+        ? HardwareMacService.macFromAdvertisement(
+            scanResult.advertisementData,
+          )
+        : null;
+    final peripheralUuid = HardwareMacService.usesPeripheralUuid &&
+            !LockMac.isMac(deviceId)
+        ? deviceId
+        : null;
 
     try {
       _dismissConnectionSheet(sheetContext);

@@ -17,13 +17,19 @@ class HardwareMacService {
 
   static bool get _isIos => !kIsWeb && Platform.isIOS;
 
+  /// CoreBluetooth UUID mapping runs only on iOS. Android already exposes the
+  /// hardware MAC as [BluetoothDevice.remoteId].
+  static bool get usesPeripheralUuid => _isIos;
+
   static void remember(ScanResult result) {
+    if (!usesPeripheralUuid) return;
     final mac = macFromAdvertisement(result.advertisementData);
     if (mac == null) return;
     _macByRemoteId[result.device.remoteId.str] = mac;
   }
 
   static String? macFromAdvertisement(AdvertisementData advertisement) {
+    if (!usesPeripheralUuid) return null;
     for (final payload in advertisement.msd) {
       final mac = LockMac.macFromBytes(payload);
       if (mac != null) return mac;
@@ -148,6 +154,8 @@ class HardwareMacService {
   /// Resolves the hardware MAC for a saved lock, persisting it and aliasing
   /// the AES key and password under both the peripheral id and the MAC.
   static Future<SavedLock?> persistForLock(SavedLock lock) async {
+    if (!usesPeripheralUuid) return lock;
+
     final peripheralId = (lock.peripheralUuid != null &&
             lock.peripheralUuid!.isNotEmpty)
         ? lock.peripheralUuid!
