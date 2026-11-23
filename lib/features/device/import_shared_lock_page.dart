@@ -48,6 +48,12 @@ class _ImportSharedLockPageState extends ConsumerState<ImportSharedLockPage> {
       await ref.read(savedLocksProvider.notifier).importSharedLock(invite);
       if (!mounted) return;
       Navigator.of(context).pop(true);
+    } on SharedLockNotFound catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _importing = false;
+        _error = error.message;
+      });
     } catch (_) {
       if (!mounted) return;
       setState(() {

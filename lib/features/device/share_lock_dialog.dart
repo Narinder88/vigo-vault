@@ -18,7 +18,7 @@ Future<void> showShareLockDialog({
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
         content: Text(
-          'This lock does not have a shareable MAC address and key yet.',
+          'This lock does not have a saved key and password yet.',
         ),
         behavior: SnackBarBehavior.floating,
       ),

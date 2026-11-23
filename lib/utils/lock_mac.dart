@@ -23,45 +23,14 @@ class LockMac {
     return _hex12.hasMatch(compact);
   }
 
-  /// Pulls a 6-byte lock address out of raw advertisement or GATT bytes.
-  ///
-  /// This lock family advertises an address beginning with `FF:FF:FF`.
-  /// A payload that is exactly six bytes is accepted as well.
-  static String? macFromBytes(List<int> bytes) {
-    if (bytes.length < 6) return null;
+  /// Every padlock puts these bytes in manufacturer data. They are not an id.
+  static const String placeholderMac = 'FF:FF:FF:11:22:33';
 
-    for (var index = 0; index <= bytes.length - 6; index++) {
-      if (bytes[index] != 0xFF ||
-          bytes[index + 1] != 0xFF ||
-          bytes[index + 2] != 0xFF) {
-        continue;
-      }
-      final mac = _formatOctets(bytes.sublist(index, index + 6));
-      if (mac != null) return mac;
-    }
+  static bool isPlaceholderMac(String raw) => normalize(raw) == placeholderMac;
 
-    for (var index = 0; index <= bytes.length - 6; index++) {
-      if (bytes[index + 3] != 0xFF ||
-          bytes[index + 4] != 0xFF ||
-          bytes[index + 5] != 0xFF) {
-        continue;
-      }
-      final mac = _formatOctets(bytes.sublist(index, index + 6).reversed.toList());
-      if (mac != null) return mac;
-    }
-
-    if (bytes.length == 6) return _formatOctets(bytes);
-    return null;
-  }
-
-  static String? _formatOctets(List<int> octets) {
-    if (octets.length != 6) return null;
-    if (octets.every((byte) => byte == 0x00) ||
-        octets.every((byte) => byte == 0xFF)) {
-      return null;
-    }
-    return octets
-        .map((byte) => byte.toRadixString(16).padLeft(2, '0').toUpperCase())
-        .join(':');
+  /// A real Android hardware MAC. The shared manufacturer-data placeholder is not one.
+  static bool isHardwareMac(String raw) {
+    final mac = normalize(raw);
+    return isMac(mac) && !isPlaceholderMac(mac);
   }
 }

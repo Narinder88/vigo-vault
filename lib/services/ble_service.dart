@@ -4,7 +4,6 @@ import 'dart:io' show Platform;
 import 'package:fitness_snack_lock/services/ble_debug_log.dart';
 import 'package:fitness_snack_lock/services/data_service.dart';
 import 'package:fitness_snack_lock/services/pairing_service.dart';
-import 'package:fitness_snack_lock/services/hardware_mac_service.dart';
 import 'package:fitness_snack_lock/services/paired_lock_storage.dart';
 import 'package:fitness_snack_lock/services/saved_lock_storage.dart';
 import 'package:fitness_snack_lock/utils/lock_mac.dart';
@@ -1715,60 +1714,113 @@ class BleService {
     // Service discovery runs in [connectWithRetry] immediately after connect.
   }
 
-  static Future<String> _resolveConnectionId(String deviceId) async {
-    final normalized = LockMac.normalize(deviceId);
-    if (kIsWeb || !Platform.isIOS || !LockMac.isMac(normalized)) {
-      return normalized;
+  /// Nearby padlock whose advertised name matches [advertisedName].
+  ///
+  /// Locks are not distinguished by manufacturer data (every padlock sends
+  /// [LockMac.placeholderMac]). The connection id is [BluetoothDevice.remoteId].
+  static Future<String?> findRemoteIdByAdvertisedName(
+    String advertisedName, {
+    Set<String> savedRemoteIds = const {},
+  }) async {
+    final target = advertisedName.trim().toLowerCase();
+    if (target.isEmpty) return null;
+
+    final fromCache = _bestRemoteId(
+      FlutterBluePlus.lastScanResults,
+      target,
+      savedRemoteIds,
+    );
+    if (fromCache != null) return fromCache;
+
+    final discovered = <ScanResult>[];
+    final subscription = FlutterBluePlus.onScanResults.listen(discovered.addAll);
+    try {
+      try {
+        await FlutterBluePlus.stopScan();
+      } catch (_) {}
+      await FlutterBluePlus.startScan(
+        withServices: [_lockServiceUuid],
+        timeout: const Duration(seconds: 8),
+      );
+      await FlutterBluePlus.isScanning
+          .where((scanning) => scanning == false)
+          .first
+          .timeout(const Duration(seconds: 9));
+    } catch (_) {
+    } finally {
+      await subscription.cancel();
+      try {
+        await FlutterBluePlus.stopScan();
+      } catch (_) {}
     }
 
-    final known = await _storedIosPeripheralId(normalized);
-    if (known != null) return known;
+    final matched = _bestRemoteId(discovered, target, savedRemoteIds);
+    if (matched != null) return matched;
 
-    final uuid = await HardwareMacService.findPeripheralUuid(normalized);
-    if (uuid == null || uuid.isEmpty || LockMac.isMac(uuid)) {
-      return normalized;
+    discovered.clear();
+    final fallback = FlutterBluePlus.onScanResults.listen(discovered.addAll);
+    try {
+      await FlutterBluePlus.startScan(timeout: const Duration(seconds: 6));
+      await FlutterBluePlus.isScanning
+          .where((scanning) => scanning == false)
+          .first
+          .timeout(const Duration(seconds: 7));
+    } catch (_) {
+    } finally {
+      await fallback.cancel();
+      try {
+        await FlutterBluePlus.stopScan();
+      } catch (_) {}
     }
-
-    await PairedLockStorage.aliasCredentials(
-      peripheralId: uuid,
-      hardwareMac: normalized,
-    );
-    await SavedLockStorage.bindPeripheralUuid(
-      hardwareMac: normalized,
-      peripheralUuid: uuid,
-    );
-    return uuid;
+    return _bestRemoteId(discovered, target, savedRemoteIds);
   }
 
-  /// Peripheral UUID already bound to [mac], so a later unlock does not scan again.
-  static Future<String?> _storedIosPeripheralId(String mac) async {
-    final cached = HardwareMacService.cachedRemoteIdForMac(mac);
-    if (cached != null && cached.isNotEmpty && !LockMac.isMac(cached)) {
-      return cached;
-    }
-
-    try {
-      final locks = await SavedLockStorage.loadLocks();
-      for (final lock in locks) {
-        final storedMac = lock.hardwareMac == null
-            ? null
-            : LockMac.normalize(lock.hardwareMac!);
-        final idMatchesMac =
-            LockMac.isMac(lock.id) && LockMac.normalize(lock.id) == mac;
-        if (storedMac != mac && !idMatchesMac) continue;
-
-        final uuid = lock.peripheralUuid;
-        if (uuid != null && uuid.isNotEmpty && !LockMac.isMac(uuid)) {
-          return uuid;
-        }
-        if (!LockMac.isMac(lock.id)) return lock.id;
+  static String? _bestRemoteId(
+    List<ScanResult> results,
+    String target,
+    Set<String> savedRemoteIds,
+  ) {
+    String? unmatched;
+    var unmatchedRssi = -999;
+    String? any;
+    var anyRssi = -999;
+    for (final result in results) {
+      if (!_advertisementMatchesSharedLock(result, target)) continue;
+      final remoteId = result.device.remoteId.str;
+      if (remoteId.isEmpty) continue;
+      final saved = savedRemoteIds.contains(remoteId) ||
+          savedRemoteIds.contains(LockMac.normalize(remoteId));
+      if (!saved && result.rssi >= unmatchedRssi) {
+        unmatchedRssi = result.rssi;
+        unmatched = remoteId;
       }
-    } catch (_) {}
-    return null;
+      if (result.rssi >= anyRssi) {
+        anyRssi = result.rssi;
+        any = remoteId;
+      }
+    }
+    return unmatched ?? any;
+  }
+
+  static bool _advertisementMatchesSharedLock(
+    ScanResult result,
+    String target,
+  ) {
+    final advertised = result.advertisementData.advName.trim().toLowerCase();
+    final platform = result.device.platformName.trim().toLowerCase();
+    final nameMatches = (advertised.isNotEmpty && advertised == target) ||
+        (platform.isNotEmpty && platform == target);
+    if (!nameMatches) return false;
+
+    final services = result.advertisementData.serviceUuids;
+    if (services.isEmpty) return true;
+    return services.any(
+      (guid) => guid.str.toLowerCase().replaceAll('-', '').contains('fee7'),
+    );
   }
 
   static Future<bool> connect(String deviceId) async {
-    final id = await _resolveConnectionId(deviceId);
+    final id = LockMac.normalize(deviceId);
     return runExclusive(() async {
       await _disconnectSavedLocksBeforeConnect(id);
       return _connectImpl(id);
@@ -1777,7 +1829,7 @@ class BleService {
 
   /// Dashboard warm-up. autoConnect stays off so Android still calls gatt.close().
   static Future<bool> connectForBackgroundWarmup(String deviceId) async {
-    final id = await _resolveConnectionId(deviceId);
+    final id = LockMac.normalize(deviceId);
     return runExclusive(() async {
       try {
         if (isDeviceConnected(id)) {
@@ -2907,7 +2959,7 @@ class BleService {
 
   /// Fast single-attempt connect + handshake for unlock/toggle flows.
   static Future<bool> connectForUnlock(String deviceId) async {
-    final id = await _resolveConnectionId(deviceId);
+    final id = LockMac.normalize(deviceId);
     return runExclusive(() async {
       await _disconnectSavedLocksBeforeConnect(id);
       try {
@@ -3056,7 +3108,7 @@ class BleService {
 
   /// Build-195 phone foreground unlock: connect, handshake via [_connectImpl], unlock, release.
   static Future<bool> connectAndUnLock(String deviceId) async {
-    final id = await _resolveConnectionId(deviceId);
+    final id = LockMac.normalize(deviceId);
     return runExclusive(() async {
       _activeUnlockProfile = _BleUnlockProfile.phone;
       try {
@@ -3082,7 +3134,7 @@ class BleService {
 
   /// Watch bridge unlock: fast-path GATT reuse, settle delays, tuned iOS writes.
   static Future<bool> unlockLock(String deviceId) async {
-    final id = await _resolveConnectionId(deviceId);
+    final id = LockMac.normalize(deviceId);
     return runExclusive(() async {
       _activeUnlockProfile = _BleUnlockProfile.watch;
       try {

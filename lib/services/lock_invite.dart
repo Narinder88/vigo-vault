@@ -1,9 +1,10 @@
 import 'dart:convert';
+import 'dart:io' show Platform;
 
 import 'package:fitness_snack_lock/models/saved_lock.dart';
-import 'package:fitness_snack_lock/services/hardware_mac_service.dart';
 import 'package:fitness_snack_lock/services/paired_lock_storage.dart';
 import 'package:fitness_snack_lock/utils/lock_mac.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 
 class LockInvite {
   const LockInvite({
@@ -20,25 +21,15 @@ class LockInvite {
 
   static const int version = 1;
 
-  /// UTF-8 JSON `{ v, name, macAddress, aesKey, password }` encoded as Base64.
+  /// UTF-8 JSON `{ v, name, mac, aesKey, password }` encoded as Base64.
   ///
-  /// [macAddress] is the 6-byte hardware MAC, never a CoreBluetooth UUID.
+  /// [macAddress] is the Android hardware MAC, or empty when the phone that
+  /// created the invite only has a CoreBluetooth UUID. The manufacturer-data
+  /// placeholder [LockMac.placeholderMac] is never written here.
   static Future<({String code, SavedLock lock})?> encode(SavedLock lock) async {
-    final shareable = HardwareMacService.usesPeripheralUuid
-        ? await HardwareMacService.persistForLock(lock)
-        : lock;
-    if (shareable == null) return null;
+    final credentialId = lock.id.trim();
+    if (credentialId.isEmpty) return null;
 
-    final macAddress = LockMac.normalize(
-      HardwareMacService.usesPeripheralUuid
-          ? (shareable.hardwareMac ?? shareable.id)
-          : shareable.id,
-    );
-    if (!LockMac.isMac(macAddress)) return null;
-
-    final credentialId = HardwareMacService.usesPeripheralUuid
-        ? (shareable.peripheralUuid ?? shareable.id)
-        : macAddress;
     final aesKey = PairedLockStorage.sanitizeAesKeyHex(
       await PairedLockStorage.ensureSecretKey(credentialId),
     );
@@ -50,20 +41,37 @@ class LockInvite {
       return null;
     }
 
-    final name = shareable.displayName.trim();
+    final name = _advertisedName(lock);
     if (name.isEmpty) return null;
 
+    final mac = _exportMac(lock);
     final payload = jsonEncode({
       'v': version,
       'name': name,
-      'macAddress': macAddress,
+      'mac': mac,
+      'macAddress': mac,
       'aesKey': aesKey,
       'password': password,
     });
     return (
       code: base64Encode(utf8.encode(payload)),
-      lock: shareable,
+      lock: lock,
     );
+  }
+
+  /// Advertised BLE name (for example `BR38`), not a user-chosen label.
+  static String _advertisedName(SavedLock lock) {
+    final hardware = lock.hardwareName?.trim() ?? '';
+    if (hardware.isNotEmpty && hardware != 'Smart Lock') return hardware;
+    return lock.displayName.trim();
+  }
+
+  /// Android shares its real remoteId MAC. iOS has no hardware MAC to export.
+  static String _exportMac(SavedLock lock) {
+    if (kIsWeb || !Platform.isAndroid) return '';
+    final id = LockMac.normalize(lock.id);
+    if (!LockMac.isHardwareMac(id)) return '';
+    return id;
   }
 
   static LockInviteParseResult parse(String raw) {
@@ -103,12 +111,9 @@ class LockInvite {
       );
     }
 
-    final macAddress = LockMac.normalize(json['macAddress']?.toString() ?? '');
-    if (!LockMac.isMac(macAddress)) {
-      return const LockInviteParseResult.failure(
-        'The invite MAC address must be 12 hex digits.',
-      );
-    }
+    final rawMac = json['mac']?.toString() ?? json['macAddress']?.toString() ?? '';
+    final normalizedMac = LockMac.normalize(rawMac);
+    final macAddress = LockMac.isHardwareMac(normalizedMac) ? normalizedMac : '';
 
     final aesKey = PairedLockStorage.sanitizeAesKeyHex(
       json['aesKey']?.toString() ?? '',
@@ -143,6 +148,15 @@ class LockInvite {
     if (remainder == 0) return value;
     return value.padRight(value.length + (4 - remainder), '=');
   }
+}
+
+class SharedLockNotFound implements Exception {
+  const SharedLockNotFound(this.message);
+
+  final String message;
+
+  @override
+  String toString() => message;
 }
 
 class LockInviteParseResult {

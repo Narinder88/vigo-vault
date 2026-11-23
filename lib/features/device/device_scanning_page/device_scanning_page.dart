@@ -15,7 +15,6 @@ import 'package:simple_ripple_animation/simple_ripple_animation.dart';
 import '../../../providers/notification_manager_provider.dart';
 import '../../../providers/saved_locks_provider.dart';
 import '../../../services/ble_service.dart';
-import '../../../services/hardware_mac_service.dart';
 import '../../../services/lock_connection_helper.dart';
 
 class DeviceScanningPage extends ConsumerStatefulWidget {
@@ -61,11 +60,6 @@ class _DeviceScanningPageState extends ConsumerState<DeviceScanningPage> {
 
     subscription = FlutterBluePlus.onScanResults.listen(
       (results) {
-        if (HardwareMacService.usesPeripheralUuid) {
-          for (final result in results) {
-            HardwareMacService.remember(result);
-          }
-        }
         if (_connectSessionActive || !mounted) return;
 
         scanResultsNotifier.value = _filterScanResults(results);
@@ -179,16 +173,6 @@ class _DeviceScanningPageState extends ConsumerState<DeviceScanningPage> {
     final deviceId = scanResult.device.remoteId.str;
     final displayName = LockConnectionHelper.defaultDisplayName(scanResult.device);
     final hardwareName = LockConnectionHelper.hardwareName(scanResult.device);
-    final hardwareMac = HardwareMacService.usesPeripheralUuid
-        ? HardwareMacService.macFromAdvertisement(
-            scanResult.advertisementData,
-          )
-        : null;
-    final peripheralUuid = HardwareMacService.usesPeripheralUuid &&
-            !LockMac.isMac(deviceId)
-        ? deviceId
-        : null;
-
     try {
       _dismissConnectionSheet(sheetContext);
 
@@ -196,8 +180,6 @@ class _DeviceScanningPageState extends ConsumerState<DeviceScanningPage> {
             deviceId: deviceId,
             displayName: displayName,
             hardwareName: hardwareName,
-            hardwareMac: hardwareMac,
-            peripheralUuid: peripheralUuid,
             batteryLevel: batteryLevel,
             rssi: rssi,
           );
