@@ -7,7 +7,7 @@ import 'package:fitness_snack_lock/services/pairing_service.dart';
 import 'package:fitness_snack_lock/services/paired_lock_storage.dart';
 import 'package:fitness_snack_lock/services/saved_lock_storage.dart';
 import 'package:fitness_snack_lock/utils/lock_mac.dart';
-import 'package:flutter/foundation.dart' show kDebugMode, kIsWeb;
+import 'package:flutter/foundation.dart' show debugPrint, kDebugMode, kIsWeb;
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 
 /// Phone foreground unlock uses the original build-195 BLE write/connect profile.
@@ -162,10 +162,57 @@ class BleService {
   }
 
   /// Awaited stopScan — connecting while scanning is a known cause of GATT 133 on Android.
+  ///
+  /// Calling [FlutterBluePlus.stopScan] when nothing is scanning logs
+  /// "stopScan: already stopped" and takes the scan mutex. That races a
+  /// startScan that has not set [FlutterBluePlus.isScanningNow] yet and
+  /// cancels the scan before it can run.
   static Future<void> _stopScanBeforeConnect() async {
+    if (kIsWeb || !FlutterBluePlus.isScanningNow) return;
     try {
       await FlutterBluePlus.stopScan();
     } catch (_) {}
+  }
+
+  /// Runs [FlutterBluePlus.startScan] and waits until that scan stops.
+  ///
+  /// [FlutterBluePlus.isScanning] replays its latest value. Waiting on
+  /// `where((scanning) => scanning == false).first` therefore completes on the
+  /// pre-scan `false`, and a following stopScan kills the scan that just started.
+  static Future<void> _startScanAndWait({
+    List<Guid> withServices = const [],
+    List<String> withRemoteIds = const [],
+    required Duration timeout,
+  }) async {
+    if (FlutterBluePlus.isScanningNow) {
+      await FlutterBluePlus.stopScan();
+    }
+
+    final done = Completer<void>();
+    var sawActive = false;
+    final subscription = FlutterBluePlus.isScanning.listen((scanning) {
+      if (scanning) sawActive = true;
+      if (sawActive && !scanning && !done.isCompleted) {
+        done.complete();
+      }
+    });
+    try {
+      await FlutterBluePlus.startScan(
+        withServices: withServices,
+        withRemoteIds: withRemoteIds,
+        timeout: timeout,
+      );
+      if (!sawActive && FlutterBluePlus.isScanningNow) {
+        sawActive = true;
+      }
+      await done.future.timeout(timeout + const Duration(seconds: 2));
+    } on TimeoutException {
+      if (FlutterBluePlus.isScanningNow) {
+        await FlutterBluePlus.stopScan();
+      }
+    } finally {
+      await subscription.cancel();
+    }
   }
 
   static Duration _connectBackoffForRetry(int failedRetryCount) {
@@ -262,15 +309,10 @@ class BleService {
       '(${_addressCacheScanTimeout.inSeconds}s targeted scan)',
     );
     try {
-      await _stopScanBeforeConnect();
-      await FlutterBluePlus.startScan(
+      await _startScanAndWait(
         withRemoteIds: [targetMac],
         timeout: _addressCacheScanTimeout,
       );
-      await FlutterBluePlus.isScanning
-          .where((scanning) => scanning == false)
-          .first
-          .timeout(_addressCacheScanTimeout + const Duration(seconds: 1));
     } catch (error) {
       _logUnlock('BLE address refresh scan failed for $targetMac: $error');
     } finally {
@@ -1714,65 +1756,58 @@ class BleService {
     // Service discovery runs in [connectWithRetry] immediately after connect.
   }
 
-  /// Nearby padlock whose advertised name matches [advertisedName].
+  /// Nearby padlock whose advertised name matches [advertisedName] and that
+  /// advertises the fee7 lock service.
   ///
-  /// Locks are not distinguished by manufacturer data (every padlock sends
-  /// [LockMac.placeholderMac]). The connection id is [BluetoothDevice.remoteId].
+  /// Does not return a cached [FlutterBluePlus.lastScanResults] hit. An empty
+  /// MAC invite has to discover a remoteId this phone has not saved yet.
+  /// Held on [runExclusive] so a connect cannot stopScan this window early.
   static Future<String?> findRemoteIdByAdvertisedName(
     String advertisedName, {
     Set<String> savedRemoteIds = const {},
-  }) async {
+  }) {
+    return runExclusive(
+      () => _findRemoteIdByAdvertisedName(
+        advertisedName,
+        savedRemoteIds,
+      ),
+    );
+  }
+
+  static const Duration _sharedLockScanTimeout = Duration(seconds: 10);
+
+  static Future<String?> _findRemoteIdByAdvertisedName(
+    String advertisedName,
+    Set<String> savedRemoteIds,
+  ) async {
     final target = advertisedName.trim().toLowerCase();
     if (target.isEmpty) return null;
 
-    final fromCache = _bestRemoteId(
-      FlutterBluePlus.lastScanResults,
-      target,
-      savedRemoteIds,
+    debugPrint(
+      'Shared lock scan for "$target" '
+      '(${_sharedLockScanTimeout.inSeconds}s, service fee7)',
     );
-    if (fromCache != null) return fromCache;
 
     final discovered = <ScanResult>[];
     final subscription = FlutterBluePlus.onScanResults.listen(discovered.addAll);
     try {
-      try {
-        await FlutterBluePlus.stopScan();
-      } catch (_) {}
-      await FlutterBluePlus.startScan(
+      await _startScanAndWait(
         withServices: [_lockServiceUuid],
-        timeout: const Duration(seconds: 8),
+        timeout: _sharedLockScanTimeout,
       );
-      await FlutterBluePlus.isScanning
-          .where((scanning) => scanning == false)
-          .first
-          .timeout(const Duration(seconds: 9));
-    } catch (_) {
+    } catch (error) {
+      debugPrint('Shared lock scan failed for "$target": $error');
     } finally {
       await subscription.cancel();
-      try {
-        await FlutterBluePlus.stopScan();
-      } catch (_) {}
     }
 
     final matched = _bestRemoteId(discovered, target, savedRemoteIds);
-    if (matched != null) return matched;
-
-    discovered.clear();
-    final fallback = FlutterBluePlus.onScanResults.listen(discovered.addAll);
-    try {
-      await FlutterBluePlus.startScan(timeout: const Duration(seconds: 6));
-      await FlutterBluePlus.isScanning
-          .where((scanning) => scanning == false)
-          .first
-          .timeout(const Duration(seconds: 7));
-    } catch (_) {
-    } finally {
-      await fallback.cancel();
-      try {
-        await FlutterBluePlus.stopScan();
-      } catch (_) {}
-    }
-    return _bestRemoteId(discovered, target, savedRemoteIds);
+    debugPrint(
+      matched == null
+          ? 'Shared lock scan found no new "$target" lock'
+          : 'Shared lock scan found $matched',
+    );
+    return matched;
   }
 
   static String? _bestRemoteId(
@@ -1799,7 +1834,9 @@ class BleService {
         any = remoteId;
       }
     }
-    return unmatched ?? any;
+    if (unmatched != null) return unmatched;
+    if (savedRemoteIds.isEmpty) return any;
+    return null;
   }
 
   static bool _advertisementMatchesSharedLock(

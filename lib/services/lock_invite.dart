@@ -21,14 +21,17 @@ class LockInvite {
 
   static const int version = 1;
 
-  /// UTF-8 JSON `{ v, name, mac, aesKey, password }` encoded as Base64.
+  /// UTF-8 JSON `{ v, name, mac, macAddress, aesKey, password }` encoded as Base64.
   ///
-  /// [macAddress] is the Android hardware MAC, or empty when the phone that
-  /// created the invite only has a CoreBluetooth UUID. The manufacturer-data
-  /// placeholder [LockMac.placeholderMac] is never written here.
+  /// Android always writes the lock's real remoteId MAC. iOS writes an empty
+  /// `mac` because CoreBluetooth has no hardware address. The manufacturer-data
+  /// placeholder [LockMac.placeholderMac] is never written.
   static Future<({String code, SavedLock lock})?> encode(SavedLock lock) async {
     final credentialId = lock.id.trim();
     if (credentialId.isEmpty) return null;
+
+    final mac = _exportMac(lock);
+    if (mac == null) return null;
 
     final aesKey = PairedLockStorage.sanitizeAesKeyHex(
       await PairedLockStorage.ensureSecretKey(credentialId),
@@ -44,7 +47,6 @@ class LockInvite {
     final name = _advertisedName(lock);
     if (name.isEmpty) return null;
 
-    final mac = _exportMac(lock);
     final payload = jsonEncode({
       'v': version,
       'name': name,
@@ -66,11 +68,12 @@ class LockInvite {
     return lock.displayName.trim();
   }
 
-  /// Android shares its real remoteId MAC. iOS has no hardware MAC to export.
-  static String _exportMac(SavedLock lock) {
+  /// Android shares its real remoteId MAC. iOS returns an empty string.
+  /// Returns null when an Android lock has no real MAC to export.
+  static String? _exportMac(SavedLock lock) {
     if (kIsWeb || !Platform.isAndroid) return '';
     final id = LockMac.normalize(lock.id);
-    if (!LockMac.isHardwareMac(id)) return '';
+    if (!LockMac.isHardwareMac(id)) return null;
     return id;
   }
 

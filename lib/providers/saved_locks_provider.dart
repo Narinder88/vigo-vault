@@ -7,7 +7,7 @@ import 'package:fitness_snack_lock/services/pairing_service.dart';
 import 'package:fitness_snack_lock/services/paired_lock_storage.dart';
 import 'package:fitness_snack_lock/services/saved_lock_storage.dart';
 import 'package:fitness_snack_lock/utils/lock_mac.dart';
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/foundation.dart' show debugPrint, kIsWeb;
 import 'package:flutter_riverpod/legacy.dart';
 
 typedef SavedLocksState = ({
@@ -266,52 +266,76 @@ class SavedLocksNotifier extends StateNotifier<SavedLocksState> {
 
   /// Saves a shared lock locally. Does not factory-reset the padlock.
   ///
-  /// Android invites that carry a real hardware MAC connect by that MAC.
-  /// iOS, and Android invites with an empty or placeholder MAC, scan for the
-  /// advertised name and store the discovered [BluetoothDevice.remoteId].
+  /// A real 12-hex MAC (Android-to-Android) is stored under that MAC, the same
+  /// way build 245 did. An empty MAC is an iOS invite: scan for the advertised
+  /// name and the fee7 service, then store the discovered remoteId.
   Future<void> importSharedLock(LockInvite invite) async {
-    final connectByMac =
-        !kIsWeb && Platform.isAndroid && LockMac.isHardwareMac(invite.macAddress);
-
-    final String connectId;
-    if (connectByMac) {
-      connectId = LockMac.normalize(invite.macAddress);
-    } else {
-      final savedIds = allDeviceIds.toSet();
-      final found = await BleService.findRemoteIdByAdvertisedName(
-        invite.name,
-        savedRemoteIds: savedIds,
-      );
-      if (found == null || found.isEmpty) {
-        throw SharedLockNotFound(
-          'No nearby ${invite.name} lock was found. Wake the lock and try again.',
-        );
-      }
-      connectId = LockMac.normalize(found);
+    final mac = LockMac.normalize(invite.macAddress);
+    if (!kIsWeb && Platform.isAndroid && LockMac.isHardwareMac(mac)) {
+      await _importByHardwareMac(mac, invite);
+      return;
     }
+    await _importByAdvertisedName(invite);
+  }
 
-    await PairedLockStorage.pair(connectId);
-    await PairedLockStorage.saveSecretKey(connectId, invite.aesKey);
-    await PairedLockStorage.savePassword(connectId, invite.password);
+  Future<void> _importByHardwareMac(String id, LockInvite invite) async {
+    debugPrint('Import shared lock by MAC $id');
+    await PairedLockStorage.pair(id);
+    await PairedLockStorage.saveSecretKey(id, invite.aesKey);
+    await PairedLockStorage.savePassword(id, invite.password);
 
-    final existing = lockById(connectId);
+    final existing = lockById(id);
     final lock = (existing ??
             SavedLock(
-              id: connectId,
+              id: id,
               displayName: invite.name,
-              hardwareName: invite.name,
             ))
-        .copyWith(
-      id: connectId,
-      displayName: existing?.displayName ?? invite.name,
-      hardwareName: invite.name,
-    );
+        .copyWith(displayName: invite.name);
 
     await addOrUpdateLock(lock);
 
     if (state.primaryLockId == null ||
         !state.locks.any((entry) => entry.id == state.primaryLockId)) {
+      await setPrimaryLockId(id);
+    }
+  }
+
+  Future<void> _importByAdvertisedName(LockInvite invite) async {
+    final savedIds = allDeviceIds.toSet();
+    final found = await BleService.findRemoteIdByAdvertisedName(
+      invite.name,
+      savedRemoteIds: savedIds,
+    );
+    final connectId = found == null || found.isEmpty ? '' : LockMac.normalize(found);
+    final alreadySaved = connectId.isNotEmpty &&
+        (savedIds.contains(found) || savedIds.contains(connectId));
+    if (connectId.isEmpty || alreadySaved) {
+      throw SharedLockNotFound(
+        'No nearby ${invite.name} lock was found. Wake the lock and try again.',
+      );
+    }
+    debugPrint('Import shared lock by name ${invite.name} -> $connectId');
+
+    await PairedLockStorage.pair(connectId);
+    await PairedLockStorage.saveSecretKey(connectId, invite.aesKey);
+    await PairedLockStorage.savePassword(connectId, invite.password);
+
+    final lock = SavedLock(
+      id: connectId,
+      displayName: invite.name,
+      hardwareName: invite.name,
+    );
+    await addOrUpdateLock(lock);
+
+    if (state.primaryLockId == null ||
+        !state.locks.any((entry) => entry.id == state.primaryLockId)) {
       await setPrimaryLockId(connectId);
+    }
+
+    try {
+      await BleService.connect(connectId);
+    } catch (error) {
+      debugPrint('Imported $connectId but connect failed: $error');
     }
   }
 
