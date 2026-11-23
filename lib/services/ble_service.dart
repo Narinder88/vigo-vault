@@ -88,6 +88,7 @@ class BleService {
   /// Temporary rescue target: factory AES, rotated password.
   static const String factoryPasswordRescueLockId = 'FF:FF:FF:10:85:6C';
   static String? _handshakeEncryptKeyOverride;
+  static String? _handshakePasswordOverride;
 
   static void _logHandshake(String message) {
     print('BLE Handshake: $message');
@@ -918,7 +919,8 @@ class BleService {
     final encryptKey = _handshakeEncryptKeyOverride ??
         await PairedLockStorage.ensureSecretKey(deviceId);
     cacheDeviceEncryptKey(deviceId, encryptKey);
-    final passwordHex = await PairedLockStorage.ensurePassword(deviceId);
+    final passwordHex = _handshakePasswordOverride ??
+        await PairedLockStorage.ensurePassword(deviceId);
     cacheDevicePassword(deviceId, passwordHex);
     _logHandshake(
       'Handshake credentials for $deviceId: '
@@ -1808,6 +1810,139 @@ class BleService {
           : 'Shared lock scan found $matched',
     );
     return matched;
+  }
+
+  /// Empty-MAC import: unsaved fee7 pads named [advertisedName], closest first,
+  /// then the invite AES key must complete a 06 01 handshake before that
+  /// remoteId is returned. A rejected key is disconnected and the next
+  /// candidate is tried. The invite password is primed with the key and stored
+  /// only for the remoteId that authenticates.
+  static Future<String?> findAuthenticatedRemoteId({
+    required String advertisedName,
+    required String aesKey,
+    required String password,
+    Set<String> savedRemoteIds = const {},
+  }) async {
+    final candidates = await runExclusive(
+      () => _scanUnsavedRemoteIds(advertisedName, savedRemoteIds),
+    );
+    if (candidates.isEmpty) return null;
+
+    final inviteKey = PairedLockStorage.sanitizeAesKeyHex(aesKey);
+    final invitePassword = PairedLockStorage.sanitizePasswordHex(password);
+    for (final remoteId in candidates) {
+      debugPrint(
+        'Shared lock handshake $remoteId with invite key '
+        '${inviteKey.length >= 8 ? inviteKey.substring(0, 8) : inviteKey}...',
+      );
+      final accepted = await _handshakeInviteCredentials(
+        remoteId,
+        aesKey: inviteKey,
+        password: invitePassword,
+      );
+      if (accepted) {
+        debugPrint('Shared lock handshake accepted $remoteId');
+        return remoteId;
+      }
+      debugPrint('Shared lock handshake rejected $remoteId');
+    }
+    return null;
+  }
+
+  static Future<List<String>> _scanUnsavedRemoteIds(
+    String advertisedName,
+    Set<String> savedRemoteIds,
+  ) async {
+    final target = advertisedName.trim().toLowerCase();
+    if (target.isEmpty) return const [];
+
+    debugPrint(
+      'Shared lock scan for "$target" '
+      '(${_sharedLockScanTimeout.inSeconds}s, service fee7)',
+    );
+
+    final discovered = <ScanResult>[];
+    final subscription = FlutterBluePlus.onScanResults.listen(discovered.addAll);
+    try {
+      await _startScanAndWait(
+        withServices: [_lockServiceUuid],
+        timeout: _sharedLockScanTimeout,
+      );
+    } catch (error) {
+      debugPrint('Shared lock scan failed for "$target": $error');
+    } finally {
+      await subscription.cancel();
+    }
+
+    final ranked = _rankedUnsavedRemoteIds(discovered, target, savedRemoteIds);
+    debugPrint(
+      ranked.isEmpty
+          ? 'Shared lock scan found no new "$target" lock'
+          : 'Shared lock scan candidates ${ranked.join(', ')}',
+    );
+    return ranked;
+  }
+
+  static Future<bool> _handshakeInviteCredentials(
+    String remoteId, {
+    required String aesKey,
+    required String password,
+  }) {
+    final id = LockMac.normalize(remoteId);
+    return runExclusive(() async {
+      _handshakeEncryptKeyOverride = aesKey;
+      _handshakePasswordOverride = password;
+      try {
+        await _disconnectSavedLocksBeforeConnect(id);
+        final connected = await _attemptConnect(
+          id,
+          handshakeTimeout: const Duration(seconds: 12),
+          skipProvisioning: true,
+        );
+        if (!connected) {
+          clearDeviceCredentials(id);
+          return false;
+        }
+        cacheDeviceEncryptKey(id, aesKey);
+        cacheDevicePassword(id, password);
+        return true;
+      } catch (error) {
+        debugPrint('Shared lock handshake error for $id: $error');
+        clearDeviceCredentials(id);
+        try {
+          await _forceReleaseDevice(id);
+        } catch (_) {}
+        return false;
+      } finally {
+        _handshakeEncryptKeyOverride = null;
+        _handshakePasswordOverride = null;
+      }
+    });
+  }
+
+  static List<String> _rankedUnsavedRemoteIds(
+    List<ScanResult> results,
+    String target,
+    Set<String> savedRemoteIds,
+  ) {
+    final bestRssi = <String, int>{};
+    for (final result in results) {
+      if (!_advertisementMatchesSharedLock(result, target)) continue;
+      final remoteId = LockMac.normalize(result.device.remoteId.str);
+      if (remoteId.isEmpty) continue;
+      if (savedRemoteIds.contains(result.device.remoteId.str) ||
+          savedRemoteIds.contains(remoteId)) {
+        continue;
+      }
+      final previous = bestRssi[remoteId];
+      if (previous == null || result.rssi > previous) {
+        bestRssi[remoteId] = result.rssi;
+      }
+    }
+
+    final ranked = bestRssi.entries.toList(growable: false)
+      ..sort((a, b) => b.value.compareTo(a.value));
+    return [for (final entry in ranked) entry.key];
   }
 
   static String? _bestRemoteId(

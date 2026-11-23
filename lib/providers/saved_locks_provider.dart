@@ -267,8 +267,9 @@ class SavedLocksNotifier extends StateNotifier<SavedLocksState> {
   /// Saves a shared lock locally. Does not factory-reset the padlock.
   ///
   /// A real 12-hex MAC (Android-to-Android) is stored under that MAC, the same
-  /// way build 245 did. An empty MAC is an iOS invite: scan for the advertised
-  /// name and the fee7 service, then store the discovered remoteId.
+  /// way build 245 did. An empty MAC is an iOS invite: scan for unsaved fee7
+  /// pads with that advertised name, closest first, and save only the remoteId
+  /// whose handshake accepts the invite AES key.
   Future<void> importSharedLock(LockInvite invite) async {
     final mac = LockMac.normalize(invite.macAddress);
     if (!kIsWeb && Platform.isAndroid && LockMac.isHardwareMac(mac)) {
@@ -302,8 +303,10 @@ class SavedLocksNotifier extends StateNotifier<SavedLocksState> {
 
   Future<void> _importByAdvertisedName(LockInvite invite) async {
     final savedIds = allDeviceIds.toSet();
-    final found = await BleService.findRemoteIdByAdvertisedName(
-      invite.name,
+    final found = await BleService.findAuthenticatedRemoteId(
+      advertisedName: invite.name,
+      aesKey: invite.aesKey,
+      password: invite.password,
       savedRemoteIds: savedIds,
     );
     final connectId = found == null || found.isEmpty ? '' : LockMac.normalize(found);
@@ -311,7 +314,8 @@ class SavedLocksNotifier extends StateNotifier<SavedLocksState> {
         (savedIds.contains(found) || savedIds.contains(connectId));
     if (connectId.isEmpty || alreadySaved) {
       throw SharedLockNotFound(
-        'No nearby ${invite.name} lock was found. Wake the lock and try again.',
+        'No nearby ${invite.name} lock accepted this invite. '
+        'Wake the correct lock and try again.',
       );
     }
     debugPrint('Import shared lock by name ${invite.name} -> $connectId');
@@ -330,12 +334,6 @@ class SavedLocksNotifier extends StateNotifier<SavedLocksState> {
     if (state.primaryLockId == null ||
         !state.locks.any((entry) => entry.id == state.primaryLockId)) {
       await setPrimaryLockId(connectId);
-    }
-
-    try {
-      await BleService.connect(connectId);
-    } catch (error) {
-      debugPrint('Imported $connectId but connect failed: $error');
     }
   }
 
