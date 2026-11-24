@@ -1,10 +1,13 @@
 import 'dart:async';
 import 'dart:io' show Platform;
 
+import 'package:fitness_snack_lock/features/device/share_debug_log_sheet.dart';
 import 'package:fitness_snack_lock/providers/saved_locks_provider.dart';
 import 'package:fitness_snack_lock/services/lock_invite.dart';
+import 'package:fitness_snack_lock/utils/share_debug_log.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 
@@ -47,12 +50,20 @@ class _ImportSharedLockPageState extends ConsumerState<ImportSharedLockPage> {
           .where((value) => value.trim().isNotEmpty)
           .firstOrNull;
       if (raw == null) {
+        // TEMP_DEBUG_LOG
+        ShareDebugLog.instance.log('import', 'source=qr empty barcode');
         _showReadError('Could not read that QR code. Try again.');
         return;
       }
 
       final parsed = LockInvite.tryParse(raw);
       final invite = parsed.invite;
+      // TEMP_DEBUG_LOG
+      ShareDebugLog.instance.log(
+        'import',
+        'source=qr rawLen=${raw.length} '
+        '${invite == null ? 'parse failed ${parsed.error}' : ShareDebugLog.inviteSummary(invite)}',
+      );
       if (invite == null) {
         _showReadError(parsed.error ?? 'That invite code could not be read.');
         return;
@@ -91,6 +102,12 @@ class _ImportSharedLockPageState extends ConsumerState<ImportSharedLockPage> {
     try {
       final parsed = LockInvite.tryParse(_codeController.text);
       final invite = parsed.invite;
+      // TEMP_DEBUG_LOG
+      ShareDebugLog.instance.log(
+        'import',
+        'source=paste rawLen=${_codeController.text.length} '
+        '${invite == null ? 'parse failed ${parsed.error}' : ShareDebugLog.inviteSummary(invite)}',
+      );
       if (invite == null) {
         _showReadError(parsed.error ?? 'That invite code could not be read.');
         return;
@@ -112,6 +129,14 @@ class _ImportSharedLockPageState extends ConsumerState<ImportSharedLockPage> {
   }) async {
     if (!mounted) return;
     final useFee7 = kIsWeb || !Platform.isAndroid || !invite.hasValidMac;
+    // TEMP_DEBUG_LOG
+    ShareDebugLog.instance.log(
+      'import',
+      'platform=${ShareDebugLog.platformLabel()} '
+      'path=${useFee7 ? 'fee7' : 'android-direct-mac'} '
+      'adapter=${FlutterBluePlus.adapterStateNow} '
+      'connected=[${FlutterBluePlus.connectedDevices.map((device) => '${device.remoteId.str}:${device.isConnected}').join(', ')}]',
+    );
     setState(() {
       _error = null;
       _status = useFee7
@@ -140,6 +165,8 @@ class _ImportSharedLockPageState extends ConsumerState<ImportSharedLockPage> {
       );
       navigator.popUntil((route) => route.isFirst);
     } catch (error) {
+      // TEMP_DEBUG_LOG
+      ShareDebugLog.instance.log('import', 'failed $error');
       await _importFailed(
         _visibleError(error, 'Could not save this lock on this phone.'),
         reopenScanner: stopScanner,
@@ -190,6 +217,12 @@ class _ImportSharedLockPageState extends ConsumerState<ImportSharedLockPage> {
                         color: Colors.black,
                         fontSize: 16,
                       ),
+                    ),
+                    const SizedBox(height: 16),
+                    // TEMP_DEBUG_LOG
+                    OutlinedButton(
+                      onPressed: () => showShareDebugLogSheet(context),
+                      child: const Text('View / Copy Debug Logs'),
                     ),
                   ],
                 ),
@@ -242,6 +275,12 @@ class _ImportSharedLockPageState extends ConsumerState<ImportSharedLockPage> {
               style: const TextStyle(color: Color(0xFFB00020)),
             ),
           ],
+          const SizedBox(height: 12),
+          // TEMP_DEBUG_LOG
+          OutlinedButton(
+            onPressed: () => showShareDebugLogSheet(context),
+            child: const Text('View / Copy Debug Logs'),
+          ),
           if (_scanning) ...[
             const SizedBox(height: 16),
             SizedBox(

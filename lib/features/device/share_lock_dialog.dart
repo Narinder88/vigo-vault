@@ -4,6 +4,7 @@ import 'package:fitness_snack_lock/models/saved_lock.dart';
 import 'package:fitness_snack_lock/providers/saved_locks_provider.dart';
 import 'package:fitness_snack_lock/services/ble_service.dart';
 import 'package:fitness_snack_lock/services/lock_invite.dart';
+import 'package:fitness_snack_lock/utils/share_debug_log.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -33,6 +34,13 @@ Future<void> showShareLockDialog({
   if (!context.mounted) return;
 
   if (prepared == null) {
+    // TEMP_DEBUG_LOG
+    ShareDebugLog.instance.log(
+      'share',
+      'encode failed platform=${ShareDebugLog.platformLabel()} '
+      'remoteId=${lock.id} hardwareName="${lock.hardwareName}" '
+      'units=${(lock.hardwareName ?? '').codeUnits}',
+    );
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
         content: Text(
@@ -50,6 +58,26 @@ Future<void> showShareLockDialog({
 
   final inviteCode = prepared.code;
   final lockName = prepared.lock.displayName;
+  final parsed = LockInvite.tryParse(inviteCode);
+  // TEMP_DEBUG_LOG
+  ShareDebugLog.instance.log(
+    'share',
+    'platform=${ShareDebugLog.platformLabel()} remoteId=${prepared.lock.id} '
+    'codeLen=${inviteCode.length}',
+  );
+  if (parsed.invite != null) {
+    // TEMP_DEBUG_LOG
+    ShareDebugLog.instance.log(
+      'share',
+      ShareDebugLog.inviteSummary(
+        parsed.invite!,
+        rawName: lock.hardwareName ?? lock.displayName,
+      ),
+    );
+  } else {
+    // TEMP_DEBUG_LOG
+    ShareDebugLog.instance.log('share', 'encode parsed empty ${parsed.error}');
+  }
   await BleService.disconnectIfConnected(prepared.lock.id);
   await BleService.disconnectActiveDevice();
   if (!context.mounted) return;

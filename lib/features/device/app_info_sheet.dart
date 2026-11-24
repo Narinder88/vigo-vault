@@ -1,3 +1,4 @@
+import 'package:fitness_snack_lock/features/device/share_debug_log_sheet.dart';
 import 'package:fitness_snack_lock/utils/get_app_version.dart';
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -96,6 +97,16 @@ class _AppInfoSheetState extends State<AppInfoSheet> {
               style: TextStyle(color: Color(0xFFBDBDBD), height: 1.4),
             ),
             const SizedBox(height: 8),
+            // TEMP_DEBUG_LOG
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.bug_report_outlined, color: Color(0xFF00E676)),
+              title: const Text(
+                'Debug Logs',
+                style: TextStyle(color: Colors.white),
+              ),
+              onTap: () => showShareDebugLogSheet(context),
+            ),
             ListTile(
               contentPadding: EdgeInsets.zero,
               leading: const Icon(Icons.mail_outline, color: Color(0xFF00E676)),
