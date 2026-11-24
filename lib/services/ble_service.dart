@@ -1812,11 +1812,14 @@ class BleService {
     return matched;
   }
 
-  /// Empty-MAC import: unsaved fee7 pads named [advertisedName], closest first,
-  /// then the invite AES key must complete a 06 01 handshake before that
-  /// remoteId is returned. A rejected key is disconnected and the next
-  /// candidate is tried. The invite password is primed with the key and stored
-  /// only for the remoteId that authenticates.
+  /// fee7 discovery for every iOS/iPadOS import, and for Android invites that
+  /// have no hardware MAC. CoreBluetooth cannot connect by an Android MAC, so
+  /// the id returned here is [BluetoothDevice.remoteId] (`remoteId.str`): a
+  /// peripheral UUID on iOS, a MAC only when this phone is Android.
+  ///
+  /// Unsaved fee7 pads named [advertisedName] are tried closest-first. The
+  /// invite AES key must complete a 06 01 handshake before that remoteId is
+  /// returned. A rejected key is disconnected and the next candidate is tried.
   static Future<String?> findAuthenticatedRemoteId({
     required String advertisedName,
     required String aesKey,

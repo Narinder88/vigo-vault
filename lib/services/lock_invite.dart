@@ -31,15 +31,20 @@ class LockInvite {
     return name;
   }
 
+  /// True when [macAddress] is a real 12-hex hardware MAC.
+  /// Android-to-Android import uses this. iOS cannot connect by it.
+  bool get hasValidMac => LockMac.isHardwareMac(macAddress);
+
   static const int version = 1;
 
-  /// UTF-8 JSON `{ v, name, displayName, mac, macAddress, aesKey, password }`
+  /// UTF-8 JSON `{ v, name, displayName, mac, aesKey, password }`
   /// encoded as Base64.
   ///
   /// [name] is always the advertised BLE name so fee7 discovery can match it.
   /// [displayName] is the custom nickname. Android writes the real remoteId
-  /// MAC. iOS writes an empty `mac` because CoreBluetooth has no hardware
-  /// address. The manufacturer-data placeholder [LockMac.placeholderMac] is
+  /// MAC once, in `mac`. iOS writes an empty `mac` because CoreBluetooth has
+  /// no hardware address. Older codes that also include `macAddress` still
+  /// parse. The manufacturer-data placeholder [LockMac.placeholderMac] is
   /// never written.
   static Future<({String code, SavedLock lock})?> encode(SavedLock lock) async {
     final credentialId = lock.id.trim();
@@ -69,7 +74,6 @@ class LockInvite {
       'name': name,
       'displayName': displayName,
       'mac': mac,
-      'macAddress': mac,
       'aesKey': aesKey,
       'password': password,
     });
@@ -93,6 +97,19 @@ class LockInvite {
     final id = LockMac.normalize(lock.id);
     if (!LockMac.isHardwareMac(id)) return null;
     return id;
+  }
+
+  /// Never throws. A bad Android or iOS code returns [LockInviteParseResult.failure].
+  static LockInviteParseResult tryParse(String raw) {
+    try {
+      return parse(raw);
+    } catch (error) {
+      return LockInviteParseResult.failure(
+        error.toString().trim().isEmpty
+            ? 'That invite code could not be read.'
+            : error.toString().trim(),
+      );
+    }
   }
 
   static LockInviteParseResult parse(String raw) {

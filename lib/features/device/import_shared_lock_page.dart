@@ -1,7 +1,9 @@
 import 'dart:async';
+import 'dart:io' show Platform;
 
 import 'package:fitness_snack_lock/providers/saved_locks_provider.dart';
 import 'package:fitness_snack_lock/services/lock_invite.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
@@ -44,13 +46,15 @@ class _ImportSharedLockPageState extends ConsumerState<ImportSharedLockPage> {
           .whereType<String>()
           .where((value) => value.trim().isNotEmpty)
           .firstOrNull;
-      if (raw == null) return;
+      if (raw == null) {
+        _showReadError('Could not read that QR code. Try again.');
+        return;
+      }
 
-      final parsed = LockInvite.parse(raw);
+      final parsed = LockInvite.tryParse(raw);
       final invite = parsed.invite;
       if (invite == null) {
-        if (!mounted) return;
-        setState(() => _error = parsed.error);
+        _showReadError(parsed.error ?? 'That invite code could not be read.');
         return;
       }
 
@@ -58,37 +62,47 @@ class _ImportSharedLockPageState extends ConsumerState<ImportSharedLockPage> {
       _importing = true;
       _codeController.text = raw;
       unawaited(_runImport(invite, stopScanner: true));
-    } catch (_) {
-      if (!mounted) return;
-      setState(() {
-        _importing = false;
-        _hasHandledScan = false;
-        _error = 'Could not read that QR code. Try again.';
-      });
+    } catch (error) {
+      _showReadError(_visibleError(error, 'Could not read that QR code. Try again.'));
     }
+  }
+
+  void _showReadError(String message) {
+    if (!mounted) return;
+    setState(() {
+      _importing = false;
+      _hasHandledScan = false;
+      _error = message;
+    });
+  }
+
+  String _visibleError(Object error, String fallback) {
+    if (error is SharedLockNotFound && error.message.trim().isNotEmpty) {
+      return error.message;
+    }
+    final text = error.toString().trim();
+    if (text.isEmpty || text == 'null') return fallback;
+    return text;
   }
 
   void _importPastedCode() {
     if (!mounted || _importing || _hasHandledScan) return;
 
     try {
-      final parsed = LockInvite.parse(_codeController.text);
+      final parsed = LockInvite.tryParse(_codeController.text);
       final invite = parsed.invite;
       if (invite == null) {
-        setState(() => _error = parsed.error);
+        _showReadError(parsed.error ?? 'That invite code could not be read.');
         return;
       }
 
       _importing = true;
       if (_scanning) _hasHandledScan = true;
       unawaited(_runImport(invite, stopScanner: _scanning));
-    } catch (_) {
-      if (!mounted) return;
-      setState(() {
-        _importing = false;
-        _hasHandledScan = false;
-        _error = 'Could not read that invite code. Try again.';
-      });
+    } catch (error) {
+      _showReadError(
+        _visibleError(error, 'Could not read that invite code. Try again.'),
+      );
     }
   }
 
@@ -97,10 +111,10 @@ class _ImportSharedLockPageState extends ConsumerState<ImportSharedLockPage> {
     required bool stopScanner,
   }) async {
     if (!mounted) return;
-    final discoverByName = invite.macAddress.isEmpty;
+    final useFee7 = kIsWeb || !Platform.isAndroid || !invite.hasValidMac;
     setState(() {
       _error = null;
-      _status = discoverByName
+      _status = useFee7
           ? 'Verifying nearby ${invite.name} lock...'
           : 'Saving...';
     });
@@ -125,11 +139,9 @@ class _ImportSharedLockPageState extends ConsumerState<ImportSharedLockPage> {
         ),
       );
       navigator.popUntil((route) => route.isFirst);
-    } on SharedLockNotFound catch (error) {
-      await _importFailed(error.message, reopenScanner: stopScanner);
-    } catch (_) {
+    } catch (error) {
       await _importFailed(
-        'Could not save this lock on this phone.',
+        _visibleError(error, 'Could not save this lock on this phone.'),
         reopenScanner: stopScanner,
       );
     }

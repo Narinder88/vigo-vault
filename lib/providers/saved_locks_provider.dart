@@ -302,16 +302,17 @@ class SavedLocksNotifier extends StateNotifier<SavedLocksState> {
 
   /// Saves a shared lock locally. Does not factory-reset the padlock.
   ///
-  /// A real 12-hex MAC (Android-to-Android) is stored under that MAC, the same
-  /// way build 245 did. An empty MAC is an iOS invite: scan for unsaved fee7
-  /// pads with that advertised name, closest first, and save only the remoteId
-  /// whose handshake accepts the invite AES key.
+  /// Direct-MAC import is Android-only. iOS and iPadOS cannot connect by the
+  /// hardware MAC in an Android invite, so they always scan fee7 and save the
+  /// CoreBluetooth peripheral UUID that accepts the invite AES key.
   Future<void> importSharedLock(LockInvite invite) async {
     _importInProgress = true;
     try {
-      final mac = LockMac.normalize(invite.macAddress);
-      if (!kIsWeb && Platform.isAndroid && LockMac.isHardwareMac(mac)) {
-        await _importByHardwareMac(mac, invite);
+      if (!kIsWeb && Platform.isAndroid && invite.hasValidMac) {
+        await _importByHardwareMac(
+          LockMac.normalize(invite.macAddress),
+          invite,
+        );
         return;
       }
       await _importByAdvertisedName(invite);
@@ -354,7 +355,8 @@ class SavedLocksNotifier extends StateNotifier<SavedLocksState> {
       password: invite.password,
       savedRemoteIds: savedIds,
     );
-    final connectId = found == null || found.isEmpty ? '' : LockMac.normalize(found);
+    final rawId = found?.trim() ?? '';
+    final connectId = LockMac.isMac(rawId) ? LockMac.normalize(rawId) : rawId;
     final alreadySaved = connectId.isNotEmpty &&
         (savedIds.contains(found) || savedIds.contains(connectId));
     if (connectId.isEmpty || alreadySaved) {
