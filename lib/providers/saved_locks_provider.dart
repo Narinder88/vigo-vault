@@ -187,7 +187,7 @@ class SavedLocksNotifier extends StateNotifier<SavedLocksState> {
     int newIndex, {
     bool indicesAdjusted = false,
   }) async {
-    final locks = [...state.locks];
+    final locks = sortLocksPinnedFirst(state.locks);
     if (oldIndex < 0 ||
         oldIndex >= locks.length ||
         newIndex < 0 ||
@@ -205,22 +205,38 @@ class SavedLocksNotifier extends StateNotifier<SavedLocksState> {
 
     final movedLock = locks.removeAt(oldIndex);
     locks.insert(insertIndex, movedLock);
+    final ordered = sortLocksPinnedFirst(locks);
 
-    await SavedLockStorage.saveLocks(locks);
+    await SavedLockStorage.saveLocks(ordered);
 
     final previousPrimaryId = state.primaryLockId;
-    final newPrimaryId = locks.first.id;
+    final newPrimaryId = ordered.first.id;
     if (newPrimaryId != previousPrimaryId) {
       await SavedLockStorage.setPrimaryLockId(newPrimaryId);
       await PairedLockStorage.syncLockToWatch(newPrimaryId);
     }
 
     _setLocks(
-      locks,
+      ordered,
       primaryLockId: newPrimaryId,
     );
 
     return newPrimaryId != previousPrimaryId ? newPrimaryId : null;
+  }
+
+  Future<void> setLockPinned(String lockId, bool isPinned) async {
+    final existing = lockById(lockId);
+    if (existing == null || existing.isPinned == isPinned) return;
+
+    final locks = [
+      for (final lock in state.locks)
+        if (lock.id == existing.id)
+          lock.copyWith(isPinned: isPinned)
+        else
+          lock,
+    ];
+    await SavedLockStorage.saveLocks(locks);
+    _setLocks(locks);
   }
 
   Future<void> addOrUpdateLock(SavedLock lock) async {

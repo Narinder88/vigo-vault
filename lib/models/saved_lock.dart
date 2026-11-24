@@ -10,6 +10,7 @@ class SavedLock {
     this.lastBatteryLevel,
     this.lastRssi = -100,
     this.lastConnectedAt,
+    this.isPinned = false,
   });
 
   final String id;
@@ -25,6 +26,9 @@ class SavedLock {
   final int? lastBatteryLevel;
   final int lastRssi;
   final DateTime? lastConnectedAt;
+
+  /// Dashboard ordering only. Missing on older saved locks, which stay unpinned.
+  final bool isPinned;
 
   /// Hardware MAC when it is already known, including Android ids that are MACs.
   String? get resolvedHardwareMac {
@@ -45,6 +49,7 @@ class SavedLock {
     int? lastBatteryLevel,
     int? lastRssi,
     DateTime? lastConnectedAt,
+    bool? isPinned,
     bool clearBattery = false,
   }) {
     return SavedLock(
@@ -57,6 +62,7 @@ class SavedLock {
           clearBattery ? null : (lastBatteryLevel ?? this.lastBatteryLevel),
       lastRssi: lastRssi ?? this.lastRssi,
       lastConnectedAt: lastConnectedAt ?? this.lastConnectedAt,
+      isPinned: isPinned ?? this.isPinned,
     );
   }
 
@@ -70,6 +76,7 @@ class SavedLock {
       'lastBatteryLevel': lastBatteryLevel,
       'lastRssi': lastRssi,
       'lastConnectedAt': lastConnectedAt?.toIso8601String(),
+      'isPinned': isPinned,
     };
   }
 
@@ -86,6 +93,21 @@ class SavedLock {
       lastConnectedAt: lastConnectedRaw == null
           ? null
           : DateTime.tryParse(lastConnectedRaw),
+      isPinned: json['isPinned'] as bool? ?? false,
     );
   }
+}
+
+/// Pinned locks stay at the top. Relative order is kept inside each group.
+List<SavedLock> sortLocksPinnedFirst(List<SavedLock> locks) {
+  final pinned = <SavedLock>[];
+  final unpinned = <SavedLock>[];
+  for (final lock in locks) {
+    if (lock.isPinned) {
+      pinned.add(lock);
+    } else {
+      unpinned.add(lock);
+    }
+  }
+  return [...pinned, ...unpinned];
 }

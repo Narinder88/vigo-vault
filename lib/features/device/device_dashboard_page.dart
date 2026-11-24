@@ -31,7 +31,7 @@ class DeviceDashboardPage extends ConsumerStatefulWidget {
       _DeviceDashboardPageState();
 }
 
-enum _LockMenuAction { rename, share, forget, factoryReset }
+enum _LockMenuAction { rename, share, pin, forget, factoryReset }
 
 class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
   static const _backgroundColor = Color(0xFF1A1B1E);
@@ -456,6 +456,13 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
     setState(() {});
   }
 
+  Future<void> _togglePin(SavedLock lock) async {
+    await ref.read(savedLocksProvider.notifier).setLockPinned(
+          lock.id,
+          !lock.isPinned,
+        );
+  }
+
   Future<void> _showLockMenu(SavedLock lock) async {
     final action = await showModalBottomSheet<_LockMenuAction>(
       context: context,
@@ -503,6 +510,18 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
               ),
               ListTile(
                 leading: const Icon(
+                  PhosphorIconsRegular.pushPin,
+                  color: _labelColor,
+                ),
+                title: Text(
+                  lock.isPinned ? 'Unpin' : 'Pin to top',
+                  style: const TextStyle(color: _labelColor),
+                ),
+                onTap: () =>
+                    Navigator.of(sheetContext).pop(_LockMenuAction.pin),
+              ),
+              ListTile(
+                leading: const Icon(
                   PhosphorIconsRegular.trash,
                   color: Color(0xFFFF2020),
                 ),
@@ -547,6 +566,8 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
         await _renameLock(lock);
       case _LockMenuAction.share:
         await _shareLock(lock);
+      case _LockMenuAction.pin:
+        await _togglePin(lock);
       case _LockMenuAction.forget:
         await _forgetLockOnThisPhone(lock);
       case _LockMenuAction.factoryReset:
@@ -596,7 +617,7 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
     });
 
     final locksState = ref.watch(savedLocksProvider);
-    final locks = locksState.locks;
+    final locks = sortLocksPinnedFirst(locksState.locks);
     final canAddLock = !locksState.isLoading;
 
     return Container(
@@ -880,15 +901,29 @@ class _LockCard extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      lock.displayName,
-                      style: const TextStyle(
-                        color: _labelColor,
-                        fontSize: 17,
-                        fontWeight: FontWeight.w600,
-                      ),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
+                    Row(
+                      children: [
+                        Flexible(
+                          child: Text(
+                            lock.displayName,
+                            style: const TextStyle(
+                              color: _labelColor,
+                              fontSize: 17,
+                              fontWeight: FontWeight.w600,
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        if (lock.isPinned) ...[
+                          const SizedBox(width: 6),
+                          const Icon(
+                            PhosphorIconsRegular.pushPin,
+                            size: 14,
+                            color: _subtextColor,
+                          ),
+                        ],
+                      ],
                     ),
                     const SizedBox(height: 4),
                     Text(
