@@ -738,6 +738,15 @@ class BleService {
     return device.isConnected;
   }
 
+  /// Drops a live GATT link before share or remove. No-ops when the radio is idle.
+  static Future<void> disconnectIfConnected(String deviceId) async {
+    final id = LockMac.normalize(deviceId);
+    final connected = BluetoothDevice.fromId(id).isConnected ||
+        _activeDeviceId == id;
+    if (!connected) return;
+    await disconnectDevice(id);
+  }
+
   static Future<void> disconnectActiveDevice() async {
     final activeId = _activeDeviceId;
     if (activeId == null) return;
@@ -1951,6 +1960,9 @@ class BleService {
         }
         cacheDeviceEncryptKey(id, aesKey);
         cacheDevicePassword(id, password);
+        try {
+          await _forceReleaseDevice(id);
+        } catch (_) {}
         return true;
       } catch (error) {
         debugPrint('Shared lock handshake error for $id: $error');
@@ -3466,12 +3478,17 @@ class BleService {
           await _postHandshakeSettleDelay();
         }
 
-        return await _requestToUnlockCore(
+        final unlocked = await _requestToUnlockCore(
           id,
           forceFresh: !usedFastPath,
           sessionToken: sessionToken,
           responseTimeout: _unlockWriteTimeout,
         );
+        final token = _deviceTokens[id];
+        if (_isValidToken(token)) {
+          await _fetchBatteryLevel(id, token!);
+        }
+        return unlocked;
       } on LockAuthenticationException {
         rethrow;
       } on PairingRequiredException {

@@ -425,6 +425,9 @@ class SavedLocksNotifier extends StateNotifier<SavedLocksState> {
   Future<void> removeLock(String lockId) async {
     final existing = lockById(lockId);
     final removedId = existing?.id ?? LockMac.normalize(lockId);
+    try {
+      await BleService.disconnectDevice(removedId);
+    } catch (_) {}
     await PairingService.unpairLock(removedId);
     BleService.clearDeviceCredentials(removedId);
     await SavedLockStorage.removeLock(removedId);

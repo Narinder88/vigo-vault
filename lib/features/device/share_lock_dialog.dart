@@ -50,6 +50,9 @@ Future<void> showShareLockDialog({
 
   final inviteCode = prepared.code;
   final lockName = prepared.lock.displayName;
+  await BleService.disconnectIfConnected(prepared.lock.id);
+  await BleService.disconnectActiveDevice();
+  if (!context.mounted) return;
   unawaited(BleService.wakeLockForSharing(prepared.lock.id));
   return showDialog<void>(
     context: context,

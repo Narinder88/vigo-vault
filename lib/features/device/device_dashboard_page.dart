@@ -1,27 +1,22 @@
-import 'dart:async';
 import 'dart:ui' show lerpDouble;
 
 import 'package:fitness_snack_lock/constants/app_branding.dart';
 import 'package:fitness_snack_lock/features/device/app_info_sheet.dart';
 import 'package:fitness_snack_lock/features/device/device_scanning_page/device_scanning_page.dart';
 import 'package:fitness_snack_lock/features/device/share_lock_dialog.dart';
-import 'package:fitness_snack_lock/features/lock/home_page.dart';
 import 'package:fitness_snack_lock/models/saved_lock.dart';
 import 'package:fitness_snack_lock/providers/ble_provider.dart';
 import 'package:fitness_snack_lock/providers/lock_unlock_event_provider.dart';
-import 'package:fitness_snack_lock/providers/notification_manager_provider.dart';
 import 'package:fitness_snack_lock/providers/saved_locks_provider.dart';
 import 'package:fitness_snack_lock/services/ble_connection_monitor.dart';
-import 'package:fitness_snack_lock/services/ble_debug_log.dart';
 import 'package:fitness_snack_lock/services/ble_service.dart';
+import 'package:fitness_snack_lock/services/pairing_service.dart';
 import 'package:fitness_snack_lock/services/lock_connection_helper.dart';
-import 'package:fitness_snack_lock/services/saved_lock_storage.dart';
 import 'package:fitness_snack_lock/utils/lock_mac.dart';
 import 'package:fitness_snack_lock/utils/rssi_utils.dart';
 import 'package:fitness_snack_lock/widgets/rename_lock_dialog.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:phosphoricons_flutter/phosphoricons_flutter.dart';
 import 'package:zo_animated_border/zo_animated_border.dart';
@@ -36,7 +31,7 @@ class DeviceDashboardPage extends ConsumerStatefulWidget {
       _DeviceDashboardPageState();
 }
 
-enum _LockMenuAction { rename, share, setPrimary, forget, factoryReset }
+enum _LockMenuAction { rename, share, forget, factoryReset }
 
 class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
   static const _backgroundColor = Color(0xFF1A1B1E);
@@ -62,143 +57,6 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
 
   Future<void> _initializeDashboardBle() async {
     await _releaseStaleBleSessions();
-    await _attemptPrimaryLockReconnect();
-  }
-
-  Future<String?> _resolvePrimaryLockId() async {
-    final locksState = ref.read(savedLocksProvider);
-    if (locksState.primaryLockId != null) {
-      return locksState.primaryLockId;
-    }
-    if (locksState.activeLockId != null) {
-      return locksState.activeLockId;
-    }
-    if (locksState.locks.isNotEmpty) {
-      return locksState.locks.first.id;
-    }
-
-    return await SavedLockStorage.getPrimaryLockId() ??
-        await SavedLockStorage.getActiveLockId();
-  }
-
-  Future<void> _syncProviderFromLiveGatt(String lockId) async {
-    if (!LockConnectionHelper.isPreConnected(lockId)) return;
-
-    final token = BleService.tokenForDevice(lockId);
-    if (!LockConnectionHelper.isValidToken(token)) return;
-
-    final bleState = ref.read(bleProvider);
-    if (bleState.device?.remoteId.str == lockId &&
-        bleState.token != null &&
-        !bleState.isConnecting) {
-      return;
-    }
-
-    final device = BluetoothDevice.fromId(lockId);
-    final readings = await LockConnectionHelper.readBatteryAndRssi(
-      device: device,
-      deviceId: lockId,
-      token: token!,
-    );
-    if (!mounted) return;
-
-    ref.read(bleProvider.notifier).setConnected(
-          device: device,
-          token: token,
-          batteryLevel: readings.batteryLevel,
-          rssi: readings.rssi,
-        );
-    await ref.read(savedLocksProvider.notifier).updateTelemetry(
-          lockId: lockId,
-          batteryLevel: readings.batteryLevel,
-          rssi: readings.rssi,
-        );
-    BleConnectionMonitor.startMonitoring(
-      deviceId: lockId,
-      bleNotifier: ref.read(bleProvider.notifier),
-    );
-    if (mounted) {
-      _markLockUnlockReady(lockId);
-    }
-    BleDebugLog.ble('Dashboard synced provider from live GATT for $lockId');
-  }
-
-  Future<void> _attemptPrimaryLockReconnect() async {
-    await _warmUpPrimaryLockInBackground();
-  }
-
-  Future<void> _warmUpPrimaryLockInBackground() async {
-    final lockId = await _resolvePrimaryLockId();
-    if (lockId == null || lockId.isEmpty || !mounted) return;
-
-    if (_hasForegroundUserSession(lockId)) {
-      BleDebugLog.ble(
-        'Skipping warm-up — foreground user session active for $lockId',
-      );
-      return;
-    }
-
-    if (BleService.isDeviceConnected(lockId)) {
-      await _syncProviderFromLiveGatt(lockId);
-      if (mounted) {
-        _markLockUnlockReady(lockId);
-      }
-      return;
-    }
-
-    final warmUpGeneration =
-        (_backgroundWarmUpGenerationByLockId[lockId] ?? 0) + 1;
-    _backgroundWarmUpGenerationByLockId[lockId] = warmUpGeneration;
-
-    bool ownsWarmUp() =>
-        _backgroundWarmUpGenerationByLockId[lockId] == warmUpGeneration;
-
-    if (LockConnectionHelper.hasPendingConnect(lockId)) {
-      BleDebugLog.ble('Background warm-up awaiting pending connect for $lockId');
-      final connected = await LockConnectionHelper.awaitPendingConnect(lockId);
-      if (!mounted || !ownsWarmUp() || _hasForegroundUserSession(lockId)) {
-        return;
-      }
-      if (connected) {
-        _markLockUnlockReady(lockId);
-      }
-      return;
-    }
-
-    final bleNotifier = ref.read(bleProvider.notifier);
-    var connected = false;
-
-    try {
-      connected = await LockConnectionHelper.connectAndRestoreSession(
-        deviceId: lockId,
-        bleNotifier: bleNotifier,
-        locksNotifier: ref.read(savedLocksProvider.notifier),
-        notificationManager: ref.read(notificationManagerProvider.notifier),
-        background: true,
-      );
-      if (connected &&
-          mounted &&
-          ownsWarmUp() &&
-          !_hasForegroundUserSession(lockId)) {
-        _markLockUnlockReady(lockId);
-      }
-    } finally {
-      if (!mounted || !ownsWarmUp() || _hasForegroundUserSession(lockId)) {
-        return;
-      }
-      if (_backgroundWarmUpGenerationByLockId[lockId] == warmUpGeneration) {
-        _backgroundWarmUpGenerationByLockId.remove(lockId);
-      }
-      if (!_hasForegroundUserSession()) {
-        _resetBusyConnectionState();
-      }
-    }
-  }
-
-  bool _hasForegroundUserSession([String? lockId]) {
-    if (_sessionLockIds.isEmpty) return false;
-    if (lockId == null) return true;
-    return _sessionLockIds.contains(lockId);
   }
 
   int _beginLockSession(String lockId) {
@@ -281,51 +139,6 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
     }
   }
 
-  bool _hasInFlightConnectionAttempt([String? lockId]) {
-    if (_sessionLockIds.isNotEmpty) {
-      if (lockId == null) return true;
-      if (_sessionLockIds.contains(lockId)) return true;
-    }
-
-    final ble = ref.read(bleProvider.notifier).value;
-    if (ble.isConnecting) {
-      if (lockId == null ||
-          ble.connectingDeviceId == lockId ||
-          ble.device?.remoteId.str == lockId) {
-        return true;
-      }
-    }
-
-    for (final savedLock in ref.read(savedLocksProvider).locks) {
-      if (lockId != null && savedLock.id != lockId) continue;
-      if (LockConnectionHelper.hasPendingConnect(savedLock.id)) {
-        return true;
-      }
-    }
-
-    if (_connectingLockId != null) {
-      if (lockId == null || _connectingLockId == lockId) {
-        return true;
-      }
-    }
-
-    return false;
-  }
-
-  void _resetBusyConnectionState() {
-    if (_hasInFlightConnectionAttempt()) {
-      return;
-    }
-
-    final bleNotifier = ref.read(bleProvider.notifier);
-    if (bleNotifier.value.isConnecting) {
-      bleNotifier.endConnecting();
-    }
-    if (_connectingLockId != null && mounted) {
-      setState(() => _connectingLockId = null);
-    }
-  }
-
   bool _sameLock(String? remoteId, String lockId) {
     if (remoteId == null || remoteId.isEmpty) return false;
     return LockMac.normalize(remoteId) == LockMac.normalize(lockId);
@@ -345,289 +158,79 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
         LockConnectionHelper.isValidToken(BleService.tokenForDevice(lock.id));
   }
 
-  String _bleStateSummary(BleData bleState, String lockId) {
-    final gatt = BluetoothDevice.fromId(lockId).isConnected;
-    final auth = BleService.isDeviceConnected(lockId);
-    final provider = bleState.device?.remoteId.str == lockId &&
-        bleState.token != null &&
-        !bleState.isConnecting;
-    return 'gatt=$gatt auth=$auth provider=$provider '
-        'connecting=${bleState.isConnecting} '
-        'pending=${LockConnectionHelper.hasPendingConnect(lockId)}';
-  }
-
-  bool _isCardConnecting(SavedLock lock, BleData bleState) {
-    if (_isLockConnected(lock, bleState)) return false;
-    if (_sessionLockIds.contains(lock.id)) return true;
-    return _connectingLockId == lock.id ||
-        (bleState.isConnecting &&
-            _sameLock(bleState.connectingDeviceId, lock.id)) ||
-        LockConnectionHelper.hasPendingConnect(lock.id);
-  }
-
-  Future<void> _showOnScreenError(Object error, StackTrace stackTrace) async {
-    if (!mounted) return;
-
-    await showDialog<void>(
-      context: context,
-      builder: (dialogContext) {
-        return AlertDialog(
-          backgroundColor: _cardColor,
-          title: const Text(
-            'Tap to Open Error',
-            style: TextStyle(color: _labelColor),
-          ),
-          content: SingleChildScrollView(
-            child: SelectableText(
-              '$error\n\n$stackTrace',
-              style: const TextStyle(
-                color: _subtextColor,
-                fontSize: 13,
-                height: 1.4,
-              ),
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(dialogContext).pop(),
-              child: const Text('Close'),
-            ),
-            TextButton(
-              onPressed: () {
-                Clipboard.setData(
-                  ClipboardData(text: '$error\n\n$stackTrace'),
-                );
-                Navigator.of(dialogContext).pop();
-              },
-              child: const Text('Copy details'),
-            ),
-          ],
-        );
-      },
-    );
-  }
-
-  Future<void> _navigateToLockScreen(SavedLock lock) async {
-    print('[LockCard] _navigateToLockScreen start lockId=${lock.id} mounted=$mounted');
-    await ref.read(savedLocksProvider.notifier).setActiveLockId(lock.id);
-    if (!mounted) {
-      print('[LockCard] _navigateToLockScreen aborted: unmounted after setActiveLockId');
-      return;
-    }
-
-    print('[LockCard] pushing LockControlPage for ${lock.id}');
-    await Navigator.of(context).push(
-      MaterialPageRoute<void>(
-        builder: (context) => LockControlPage(lockId: lock.id),
-      ),
-    );
-
-    if (!mounted) {
-      print('[LockCard] _navigateToLockScreen aborted: unmounted after pop');
-      return;
-    }
-    print('[LockCard] returned from LockControlPage — starting background warm-up');
-    BleDebugLog.ble(
-      'Returned to dashboard from lock screen — starting background warm-up',
-    );
-    await _warmUpPrimaryLockInBackground();
-  }
-
   Future<void> _releaseStaleBleSessions() async {
-    final bleState = ref.read(bleProvider);
-    final device = bleState.device;
-    final locksNotifier = ref.read(savedLocksProvider.notifier);
-    final knownIds = locksNotifier.allDeviceIds;
-
-    if (device != null) {
-      final deviceId = device.remoteId.str;
-      if (BleService.isDeviceConnected(deviceId)) {
-        BleDebugLog.ble('Dashboard init: keeping live session for $deviceId');
-        await _syncProviderFromLiveGatt(deviceId);
-        return;
-      }
-      await BleService.releaseOnDemandConnection(deviceId);
-    } else if (knownIds.isNotEmpty) {
-      await BleService.releaseAllActiveConnections(knownDeviceIds: knownIds);
-    }
-
+    final knownIds = ref.read(savedLocksProvider.notifier).allDeviceIds;
+    await BleService.releaseAllActiveConnections(knownDeviceIds: knownIds);
+    if (!mounted) return;
     ref.read(bleProvider.notifier).clearSession();
     BleConnectionMonitor.stopMonitoring();
+    setState(() {
+      _unlockReadyLockIds.clear();
+      _sessionLockIds.clear();
+      _connectingLockId = null;
+    });
   }
 
   Future<void> _openLock(SavedLock lock) async {
+    if (_connectingLockId != null) return;
     final sessionGen = _beginLockSession(lock.id);
-    await ref.read(savedLocksProvider.notifier).setActiveLockId(lock.id);
-    if (!mounted) {
-      _endLockSession(lock.id, success: false, sessionGeneration: sessionGen);
-      return;
-    }
-    ref.read(bleProvider.notifier).bindToLock(lock.id);
-    if (mounted) {
-      setState(() {
-        _unlockReadyLockIds.removeWhere(
-          (id) => !_sameLock(id, lock.id),
-        );
-      });
-    }
-    final bleState = ref.read(bleProvider);
-    print(
-      '[LockCard] _openLock tap lockId=${lock.id} name=${lock.displayName} '
-      'mounted=$mounted _connectingLockId=$_connectingLockId '
-      '${_bleStateSummary(bleState, lock.id)}',
-    );
-    BleDebugLog.tap(
-      'Tap to Open ${lock.displayName} (${lock.id}) — '
-      '${_bleStateSummary(bleState, lock.id)}',
-    );
-
     try {
-      if (LockConnectionHelper.hasPendingConnect(lock.id) ||
-          (bleState.isConnecting && bleState.connectingDeviceId == lock.id)) {
-        print('[LockCard] awaiting in-flight connect for ${lock.id}');
-        BleDebugLog.tap('Awaiting in-flight connect for ${lock.id}');
-        await LockConnectionHelper.awaitPendingConnect(lock.id);
-        if (!mounted) {
-          print('[LockCard] aborted after pending connect: unmounted');
-          return;
-        }
-        final afterPending = ref.read(bleProvider);
-        if (_isLockConnected(lock, afterPending)) {
-          print('[LockCard] in-flight connect succeeded — navigating');
-          _markLockUnlockReady(lock.id);
-          BleDebugLog.tap('In-flight connect succeeded — opening lock screen');
-          await _navigateToLockScreen(lock);
-          _endLockSession(
-            lock.id,
-            success: true,
-            sessionGeneration: sessionGen,
-          );
-          return;
-        }
-        print('[LockCard] in-flight connect finished but lock not connected');
+      final unlocked = await BleService.unlockLock(lock.id);
+      if (!mounted) return;
+      final battery = BleService.lastFreshBatteryLevel(lock.id);
+      if (battery != null && battery >= 0) {
+        await ref.read(savedLocksProvider.notifier).updateTelemetry(
+              lockId: lock.id,
+              batteryLevel: battery,
+            );
       }
-
-      if (_isLockConnected(lock, bleState)) {
-        print('[LockCard] already connected — navigating');
-        _markLockUnlockReady(lock.id);
-        BleDebugLog.tap('Already connected — opening lock screen');
-        await _navigateToLockScreen(lock);
-        _endLockSession(
-          lock.id,
-          success: true,
-          sessionGeneration: sessionGen,
-        );
-        return;
-      }
-
-      if (_hasBleSession(lock, bleState) &&
-          !BluetoothDevice.fromId(lock.id).isConnected) {
-        print('[LockCard] stale provider session for ${lock.id} — clearing');
-        BleDebugLog.ble('Stale provider session for ${lock.id} — clearing');
-        ref.read(bleProvider.notifier).markDisconnected();
-      }
-
-      if (!LockConnectionHelper.hasPendingConnect(lock.id)) {
-        print('[LockCard] forceCleanDisconnectBeforeUnlock for ${lock.id}');
-        await BleService.forceCleanDisconnectBeforeUnlock(lock.id);
-      }
-
-      final bleNotifier = ref.read(bleProvider.notifier);
-      print('[LockCard] connectAndRestoreSession start for ${lock.id}');
-      final connected = await LockConnectionHelper.connectAndRestoreSession(
-        deviceId: lock.id,
-        bleNotifier: bleNotifier,
-        locksNotifier: ref.read(savedLocksProvider.notifier),
-        notificationManager: ref.read(notificationManagerProvider.notifier),
-      );
-
-      if (!mounted) {
-        print('[LockCard] aborted after connect: unmounted');
-        return;
-      }
-
-      final latestBleState = ref.read(bleProvider);
-      print(
-        '[LockCard] connectAndRestoreSession result connected=$connected '
-        '${_bleStateSummary(latestBleState, lock.id)}',
-      );
-
-      if (LockConnectionHelper.isValidToken(
-        BleService.tokenForDevice(lock.id),
-      )) {
-        _markLockUnlockReady(lock.id);
-      }
-
-      if (connected || _isLockConnected(lock, latestBleState)) {
-        print('[LockCard] connect succeeded — navigating');
-        BleDebugLog.tap('Connect succeeded — opening lock screen');
-        await _navigateToLockScreen(lock);
-        _endLockSession(
-          lock.id,
-          success: true,
-          sessionGeneration: sessionGen,
-        );
-        return;
-      }
-
-      if (LockConnectionHelper.hasPendingConnect(lock.id)) {
-        return;
-      }
-
-      print('[LockCard] connect failed for ${lock.id}');
-      _endLockSession(
-        lock.id,
-        success: false,
-        sessionGeneration: sessionGen,
-      );
-      BleDebugLog.error('Tap to Open connect failed for ${lock.id}');
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
+        SnackBar(
           content: Text(
-            'Could not connect to the lock. Move closer and try again.',
+            unlocked
+                ? '${lock.displayName} unlocked.'
+                : 'Could not unlock ${lock.displayName}. Move closer and try again.',
           ),
           behavior: SnackBarBehavior.floating,
         ),
       );
-    } catch (e, stackTrace) {
-      print('[LockCard] EXCEPTION in _openLock: $e');
-      print('[LockCard] stackTrace: $stackTrace');
-      BleDebugLog.error('Tap to Open exception: $e');
-      if (LockConnectionHelper.hasPendingConnect(lock.id)) {
-        return;
-      }
-      final ble = ref.read(bleProvider.notifier).value;
-      if (ble.isConnecting &&
-          (ble.connectingDeviceId == lock.id ||
-              ble.device?.remoteId.str == lock.id)) {
-        return;
-      }
-      _endLockSession(
-        lock.id,
-        success: false,
-        sessionGeneration: sessionGen,
+    } on LockAuthenticationException catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            error.message ??
+                'Could not unlock ${lock.displayName}. Move closer and try again.',
+          ),
+          behavior: SnackBarBehavior.floating,
+        ),
       );
-      await _showOnScreenError(e, stackTrace);
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Could not unlock ${lock.displayName}. Move closer and try again.',
+          ),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
     } finally {
-      print('[LockCard] _openLock finally — syncing busy connection state');
-      if (LockConnectionHelper.isValidToken(BleService.tokenForDevice(lock.id))) {
-        _markLockUnlockReady(lock.id);
-      }
-      if (!_hasInFlightConnectionAttempt(lock.id)) {
-        _resetBusyConnectionState();
-      }
+      _clearLockUnlockReady(lock.id);
+      _endLockSession(lock.id, success: true, sessionGeneration: sessionGen);
     }
   }
 
   Future<void> _addLock() async {
-    final added = await Navigator.of(context).push<bool>(
+    await Navigator.of(context).push<bool>(
       MaterialPageRoute<bool>(
         builder: (context) => const DeviceScanningPage(fromDashboard: true),
       ),
     );
 
-    if (!mounted || added != true) return;
-    await _warmUpPrimaryLockInBackground();
+    if (!mounted) return;
+    await _releaseStaleBleSessions();
   }
 
   Future<void> _renameLock(SavedLock lock) async {
@@ -702,15 +305,8 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
   }
 
   Future<void> _forgetLockLocally(SavedLock lock) async {
-    final activeDevice = ref.read(bleProvider).device;
-    if (_sameLock(activeDevice?.remoteId.str, lock.id)) {
-      await BleService.disconnectDevice(lock.id);
-      ref.read(bleProvider.notifier).reset();
-    } else {
-      BleService.clearDeviceSession(lock.id);
-    }
-
     await ref.read(savedLocksProvider.notifier).removeLock(lock.id);
+    ref.read(bleProvider.notifier).clearSession();
     _clearLockUnlockReady(lock.id);
     _sessionLockIds.remove(lock.id);
     _sessionGenerationByLockId.remove(lock.id);
@@ -851,46 +447,16 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
     );
   }
 
-  Future<void> _reconnectPrimaryInBackground() async {
-    await _releaseStaleBleSessions();
-  }
-
-  Future<void> _setAsPrimaryLock(SavedLock lock) async {
-    final locksNotifier = ref.read(savedLocksProvider.notifier);
-    if (locksNotifier.isPrimaryLock(lock.id)) return;
-
-    await locksNotifier.setPrimaryLockId(lock.id);
-    await _reconnectPrimaryInBackground();
-
-    if (!mounted) return;
-    setState(() {});
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('${lock.displayName} is now your primary lock.'),
-        backgroundColor: _accentColor,
-        behavior: SnackBarBehavior.floating,
-      ),
-    );
-  }
-
   Future<void> _handleLockReorder(int oldIndex, int newIndex) async {
-    final changedPrimaryId = await ref
+    await ref
         .read(savedLocksProvider.notifier)
         .reorderLocks(oldIndex, newIndex, indicesAdjusted: true);
 
     if (!mounted) return;
-
-    if (changedPrimaryId != null) {
-      await _reconnectPrimaryInBackground();
-    }
-
     setState(() {});
   }
 
   Future<void> _showLockMenu(SavedLock lock) async {
-    final isPrimary = ref.read(savedLocksProvider.notifier).isPrimaryLock(lock.id);
-
     final action = await showModalBottomSheet<_LockMenuAction>(
       context: context,
       backgroundColor: _cardColor,
@@ -935,19 +501,6 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
                 onTap: () =>
                     Navigator.of(sheetContext).pop(_LockMenuAction.share),
               ),
-              if (!isPrimary)
-                ListTile(
-                  leading: const Icon(
-                    PhosphorIconsRegular.star,
-                    color: _accentColor,
-                  ),
-                  title: const Text(
-                    'Set as Primary',
-                    style: TextStyle(color: _labelColor),
-                  ),
-                  onTap: () => Navigator.of(sheetContext)
-                      .pop(_LockMenuAction.setPrimary),
-                ),
               ListTile(
                 leading: const Icon(
                   PhosphorIconsRegular.trash,
@@ -994,8 +547,6 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
         await _renameLock(lock);
       case _LockMenuAction.share:
         await _shareLock(lock);
-      case _LockMenuAction.setPrimary:
-        await _setAsPrimaryLock(lock);
       case _LockMenuAction.forget:
         await _forgetLockOnThisPhone(lock);
       case _LockMenuAction.factoryReset:
@@ -1122,9 +673,7 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
                     },
                     itemBuilder: (context, index) {
                       final lock = locks[index];
-                      final isConnected = _isLockConnected(lock, bleState);
-                      final isSearching = false;
-                      final isConnecting = _isCardConnecting(lock, bleState);
+                      final isUnlocking = _connectingLockId == lock.id;
                       final telemetry = _lockTelemetry(lock, bleState);
 
                       return Padding(
@@ -1134,15 +683,15 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
                         ),
                         child: _LockCard(
                           lock: lock,
-                          isConnected: isConnected,
-                          isSearching: isSearching,
-                          isConnecting: isConnecting,
+                          isConnected: false,
+                          isSearching: false,
+                          isConnecting: isUnlocking,
                           batteryLevel: telemetry.battery,
                           rssi: telemetry.rssi,
                           onTap: () {
                             print(
                               '[LockCard] InkWell onTap lockId=${lock.id} '
-                              'isConnected=$isConnected isConnecting=$isConnecting',
+                              'unlocking=$isUnlocking',
                             );
                             _openLock(lock);
                           },
@@ -1151,34 +700,6 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
                       );
                     },
                   ),
-      ),
-    );
-  }
-}
-
-class LockControlPage extends ConsumerWidget {
-  const LockControlPage({
-    super.key,
-    required this.lockId,
-  });
-
-  final String lockId;
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    return Scaffold(
-      backgroundColor: const Color(0xFF1A1B1E),
-      body: HomePage(
-        lockDeviceId: lockId,
-        onUnlockSuccess: () {
-          debugPrint('Lock unlocked successfully!');
-        },
-        onBackToDashboard: () {
-          final navigator = Navigator.maybeOf(context);
-          if (navigator != null && navigator.canPop()) {
-            navigator.pop();
-          }
-        },
       ),
     );
   }
@@ -1281,9 +802,7 @@ class _LockCard extends StatelessWidget {
   );
 
   String get _connectionLabel {
-    if (isConnecting) return 'Connecting...';
-    if (isSearching) return 'Searching...';
-    if (isConnected) return 'Connected';
+    if (isConnecting) return 'Unlocking...';
     return 'Tap to open';
   }
 
@@ -1387,17 +906,35 @@ class _LockCard extends StatelessWidget {
                       runSpacing: 6,
                       crossAxisAlignment: WrapCrossAlignment.center,
                       children: [
-                        _LockDetailChip(
-                          icon: _isBusy
-                              ? PhosphorIconsRegular.circleNotch
-                              : (isConnected
-                                  ? PhosphorIconsRegular.bluetooth
-                                  : PhosphorIconsRegular.bluetoothSlash),
-                          label: _connectionLabel,
-                          color: isConnected || _isBusy
-                              ? _accentColor
-                              : _subtextColor,
-                        ),
+                        if (isConnecting)
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const SizedBox(
+                                width: 14,
+                                height: 14,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  color: _accentColor,
+                                ),
+                              ),
+                              const SizedBox(width: 6),
+                              Text(
+                                _connectionLabel,
+                                style: const TextStyle(
+                                  color: _accentColor,
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                            ],
+                          )
+                        else
+                          _LockDetailChip(
+                            icon: PhosphorIconsRegular.bluetoothSlash,
+                            label: _connectionLabel,
+                            color: _subtextColor,
+                          ),
                         if (batteryLevel != null)
                           _LockDetailChip(
                             icon: PhosphorIconsRegular.batteryHigh,
