@@ -12,7 +12,14 @@ import 'package:share_plus/share_plus.dart';
 
 Future<({String code, SavedLock lock})?> _encodeInvite(SavedLock lock) async {
   try {
-    return await LockInvite.encode(lock);
+    return await LockInvite.encode(
+      lock.copyWith(
+        displayName: LockInvite.sanitizeBleName(lock.displayName),
+        hardwareName: lock.hardwareName == null
+            ? null
+            : LockInvite.sanitizeBleName(lock.hardwareName!),
+      ),
+    );
   } catch (_) {
     return null;
   }

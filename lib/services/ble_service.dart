@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io' show Platform;
 
 import 'package:fitness_snack_lock/services/ble_debug_log.dart';
+import 'package:fitness_snack_lock/services/lock_invite.dart';
 import 'package:fitness_snack_lock/services/data_service.dart';
 import 'package:fitness_snack_lock/services/pairing_service.dart';
 import 'package:fitness_snack_lock/services/paired_lock_storage.dart';
@@ -1782,7 +1783,7 @@ class BleService {
     String advertisedName,
     Set<String> savedRemoteIds,
   ) async {
-    final target = advertisedName.trim().toLowerCase();
+    final target = _normalizedBleName(advertisedName);
     if (target.isEmpty) return null;
 
     debugPrint(
@@ -1863,7 +1864,7 @@ class BleService {
     String advertisedName,
     Set<String> savedRemoteIds,
   ) async {
-    final target = advertisedName.trim().toLowerCase();
+    final target = _normalizedBleName(advertisedName);
     if (target.isEmpty) return const [];
 
     debugPrint(
@@ -2071,12 +2072,16 @@ class BleService {
     return null;
   }
 
+  static String _normalizedBleName(String raw) {
+    return LockInvite.sanitizeBleName(raw).toLowerCase();
+  }
+
   static bool _advertisementMatchesSharedLock(
     ScanResult result,
     String target,
   ) {
-    final advertised = result.advertisementData.advName.trim().toLowerCase();
-    final platform = result.device.platformName.trim().toLowerCase();
+    final advertised = _normalizedBleName(result.advertisementData.advName);
+    final platform = _normalizedBleName(result.device.platformName);
     final nameMatches = (advertised.isNotEmpty && advertised == target) ||
         (platform.isNotEmpty && platform == target);
     if (!nameMatches) return false;

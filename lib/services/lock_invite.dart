@@ -35,6 +35,12 @@ class LockInvite {
   /// Android-to-Android import uses this. iOS cannot connect by it.
   bool get hasValidMac => LockMac.isHardwareMac(macAddress);
 
+  /// Android advertisements pad names with trailing nulls (`BR38\u0000`).
+  /// iOS CoreBluetooth already strips them, so invites and scans must too.
+  static String sanitizeBleName(String raw) {
+    return raw.replaceAll('\u0000', '').trim();
+  }
+
   static const int version = 1;
 
   /// UTF-8 JSON `{ v, name, displayName, mac, aesKey, password }`
@@ -66,7 +72,7 @@ class LockInvite {
 
     final name = _advertisedName(lock);
     if (name.isEmpty) return null;
-    final customName = lock.displayName.trim();
+    final customName = sanitizeBleName(lock.displayName);
     final displayName = customName.isEmpty ? name : customName;
 
     final payload = jsonEncode({
@@ -85,9 +91,9 @@ class LockInvite {
 
   /// Advertised BLE name (for example `BR38`), not a user-chosen label.
   static String _advertisedName(SavedLock lock) {
-    final hardware = lock.hardwareName?.trim() ?? '';
+    final hardware = sanitizeBleName(lock.hardwareName ?? '');
     if (hardware.isNotEmpty && hardware != 'Smart Lock') return hardware;
-    return lock.displayName.trim();
+    return sanitizeBleName(lock.displayName);
   }
 
   /// Android shares its real remoteId MAC. iOS returns an empty string.
@@ -142,7 +148,7 @@ class LockInvite {
       );
     }
 
-    final name = json['name']?.toString().trim() ?? '';
+    final name = sanitizeBleName(json['name']?.toString() ?? '');
     if (name.isEmpty) {
       return const LockInviteParseResult.failure(
         'The invite is missing a lock name.',
@@ -189,7 +195,7 @@ class LockInvite {
 
   /// Custom nickname when the invite has one. Older codes only have [name].
   static String _readDisplayName(Map<String, dynamic> json, String name) {
-    final custom = json['displayName']?.toString().trim() ?? '';
+    final custom = sanitizeBleName(json['displayName']?.toString() ?? '');
     if (custom.isNotEmpty) return custom;
     return name;
   }
