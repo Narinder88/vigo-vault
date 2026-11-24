@@ -10,7 +10,6 @@ import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:phosphoricons_flutter/phosphoricons_flutter.dart';
 
-import '../../../providers/ble_provider.dart';
 import '../../../widgets/smart_lock_battery.dart';
 
 class DeviceConnection extends ConsumerStatefulWidget {

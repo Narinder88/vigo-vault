@@ -13,12 +13,16 @@ import 'package:share_plus/share_plus.dart';
 
 Future<({String code, SavedLock lock})?> _encodeInvite(SavedLock lock) async {
   try {
+    final discovered = await BleService.advertisedNameForLock(lock.id);
+    final hardware = LockInvite.hardwareNameForExport(
+      stored: lock.hardwareName,
+      discovered: discovered,
+      displayName: lock.displayName,
+    );
     return await LockInvite.encode(
       lock.copyWith(
         displayName: LockInvite.sanitizeBleName(lock.displayName),
-        hardwareName: lock.hardwareName == null
-            ? null
-            : LockInvite.sanitizeBleName(lock.hardwareName!),
+        hardwareName: hardware ?? '',
       ),
     );
   } catch (_) {
@@ -52,9 +56,9 @@ Future<void> showShareLockDialog({
     return;
   }
 
-  ProviderScope.containerOf(context)
+  await ProviderScope.containerOf(context)
       .read(savedLocksProvider.notifier)
-      .replaceLock(prepared.lock);
+      .addOrUpdateLock(prepared.lock);
 
   final inviteCode = prepared.code;
   final lockName = prepared.lock.displayName;
@@ -71,7 +75,7 @@ Future<void> showShareLockDialog({
       'share',
       ShareDebugLog.inviteSummary(
         parsed.invite!,
-        rawName: lock.hardwareName ?? lock.displayName,
+        rawName: prepared.lock.hardwareName ?? '',
       ),
     );
   } else {

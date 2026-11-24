@@ -88,9 +88,11 @@ class LockConnectionHelper {
   }
 
   static String hardwareName(BluetoothDevice device) {
-    if (device.advName.isNotEmpty) return device.advName;
-    if (device.platformName.isNotEmpty) return device.platformName;
-    return 'Smart Lock';
+    final advertised = device.advName.replaceAll('\u0000', '').trim();
+    if (advertised.isNotEmpty) return advertised;
+    final platform = device.platformName.replaceAll('\u0000', '').trim();
+    if (platform.isNotEmpty) return platform;
+    return '';
   }
 
   static Future<bool> connectAndRestoreSession({

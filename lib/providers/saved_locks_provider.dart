@@ -34,6 +34,20 @@ class SavedLocksNotifier extends StateNotifier<SavedLocksState> {
 
   var _importInProgress = false;
 
+  String? _inviteHardwareName(LockInvite invite) {
+    final name = _usefulHardwareName(invite.name);
+    if (name == null) return null;
+    final display = LockInvite.sanitizeBleName(invite.displayName);
+    if (name == display && name.contains(' ')) return null;
+    return name;
+  }
+
+  String? _usefulHardwareName(String? raw) {
+    final value = LockInvite.sanitizeBleName(raw ?? '');
+    if (value.isEmpty || value == 'Smart Lock') return null;
+    return value;
+  }
+
   Future<void> load() async {
     final existing = state.locks;
     if (existing.isNotEmpty || _importInProgress) {
@@ -275,16 +289,18 @@ class SavedLocksNotifier extends StateNotifier<SavedLocksState> {
     await PairingService.registerLock(id);
 
     final existing = lockById(id);
+    final rememberedHardware = _usefulHardwareName(hardwareName) ??
+        _usefulHardwareName(existing?.hardwareName);
     final lock = (existing ??
             SavedLock(
               id: id,
               displayName: displayName,
-              hardwareName: hardwareName,
+              hardwareName: rememberedHardware,
             ))
         .copyWith(
       id: id,
       displayName: displayName,
-      hardwareName: hardwareName ?? existing?.hardwareName,
+      hardwareName: rememberedHardware ?? existing?.hardwareName,
       lastBatteryLevel: batteryLevel,
       lastRssi: rssi ?? existing?.lastRssi ?? -100,
       lastConnectedAt: DateTime.now(),
@@ -344,15 +360,18 @@ class SavedLocksNotifier extends StateNotifier<SavedLocksState> {
     await PairedLockStorage.savePassword(id, invite.password);
 
     final existing = lockById(id);
+    final invitedHardware = _inviteHardwareName(invite);
+    final hardwareName =
+        invitedHardware ?? _usefulHardwareName(existing?.hardwareName);
     final lock = (existing ??
             SavedLock(
               id: id,
               displayName: invite.savedDisplayName,
-              hardwareName: invite.name,
+              hardwareName: hardwareName,
             ))
         .copyWith(
           displayName: invite.savedDisplayName,
-          hardwareName: invite.name,
+          hardwareName: hardwareName ?? existing?.hardwareName,
         );
 
     await addOrUpdateLock(lock);
@@ -367,6 +386,7 @@ class SavedLocksNotifier extends StateNotifier<SavedLocksState> {
     final savedIds = allDeviceIds.toSet();
     final found = await BleService.findAuthenticatedRemoteId(
       advertisedName: invite.name,
+      macAddress: invite.macAddress,
       aesKey: invite.aesKey,
       password: invite.password,
       savedRemoteIds: savedIds,
@@ -383,10 +403,13 @@ class SavedLocksNotifier extends StateNotifier<SavedLocksState> {
     }
     debugPrint('Import shared lock by name ${invite.name} -> $connectId');
 
+    final seenName = BleService.advertisedNameSeen(connectId);
+    final hardwareName =
+        seenName.isNotEmpty ? seenName : _inviteHardwareName(invite);
     final lock = SavedLock(
       id: connectId,
       displayName: invite.savedDisplayName,
-      hardwareName: invite.name,
+      hardwareName: hardwareName,
     );
     _publishLock(lock);
 

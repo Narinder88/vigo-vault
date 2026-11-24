@@ -71,9 +71,9 @@ class LockInvite {
     }
 
     final name = _advertisedName(lock);
-    if (name.isEmpty) return null;
     final customName = sanitizeBleName(lock.displayName);
     final displayName = customName.isEmpty ? name : customName;
+    if (name.isEmpty && displayName.isEmpty) return null;
 
     final payload = jsonEncode({
       'v': version,
@@ -89,11 +89,31 @@ class LockInvite {
     );
   }
 
-  /// Advertised BLE name (for example `BR38`), not a user-chosen label.
+  /// Live advertisement wins. A stored nickname is not treated as the BLE name.
+  static String? hardwareNameForExport({
+    required String? stored,
+    required String discovered,
+    required String displayName,
+  }) {
+    final found = sanitizeBleName(discovered);
+    if (found.isNotEmpty && found != 'Smart Lock') return found;
+    final saved = sanitizeBleName(stored ?? '');
+    if (saved.isEmpty || saved == 'Smart Lock') return null;
+    final display = sanitizeBleName(displayName);
+    if (saved == display && display.contains(' ')) return null;
+    return saved;
+  }
+
+  /// Advertised BLE name (for example `BR38`), never the user-chosen nickname.
+  ///
+  /// A nickname stored in [SavedLock.hardwareName] by an older build is ignored
+  /// so the fee7 scan is not aimed at `displayName`.
   static String _advertisedName(SavedLock lock) {
     final hardware = sanitizeBleName(lock.hardwareName ?? '');
-    if (hardware.isNotEmpty && hardware != 'Smart Lock') return hardware;
-    return sanitizeBleName(lock.displayName);
+    if (hardware.isEmpty || hardware == 'Smart Lock') return '';
+    final display = sanitizeBleName(lock.displayName);
+    if (hardware == display && display.contains(' ')) return '';
+    return hardware;
   }
 
   /// Android shares its real remoteId MAC. iOS returns an empty string.
@@ -149,16 +169,15 @@ class LockInvite {
     }
 
     final name = sanitizeBleName(json['name']?.toString() ?? '');
-    if (name.isEmpty) {
-      return const LockInviteParseResult.failure(
-        'The invite is missing a lock name.',
-      );
-    }
-
     final macAddress = _readMac(json);
     if (macAddress == null) {
       return const LockInviteParseResult.failure(
         'The invite MAC address must be 12 hex digits.',
+      );
+    }
+    if (name.isEmpty && macAddress.isEmpty) {
+      return const LockInviteParseResult.failure(
+        'The invite is missing a lock name.',
       );
     }
 

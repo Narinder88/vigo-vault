@@ -1889,6 +1889,7 @@ class BleService {
     required String advertisedName,
     required String aesKey,
     required String password,
+    String macAddress = '',
     Set<String> savedRemoteIds = const {},
   }) async {
     // TEMP_DEBUG_LOG
@@ -1901,7 +1902,11 @@ class BleService {
         'connected=[${_shareConnectedSummary()}]',
       );
       final candidates = await runExclusive(
-        () => _scanUnsavedRemoteIds(advertisedName, savedRemoteIds),
+        () => _scanUnsavedRemoteIds(
+          advertisedName,
+          savedRemoteIds,
+          macAddress: macAddress,
+        ),
       );
       // TEMP_DEBUG_LOG
       _shareLog(
@@ -1957,10 +1962,11 @@ class BleService {
 
   static Future<List<String>> _scanUnsavedRemoteIds(
     String advertisedName,
-    Set<String> savedRemoteIds,
-  ) async {
+    Set<String> savedRemoteIds, {
+    String macAddress = '',
+  }) async {
     final target = _normalizedBleName(advertisedName);
-    if (target.isEmpty) return const [];
+    final mac = LockMac.isHardwareMac(macAddress) ? LockMac.normalize(macAddress) : '';
 
     debugPrint(
       'Shared lock scan for "$target" '
@@ -1969,7 +1975,7 @@ class BleService {
     // TEMP_DEBUG_LOG
     _shareLog(
       'scan',
-      'start target="$target" adapter=${FlutterBluePlus.adapterStateNow} '
+      'start target="$target" mac="$mac" adapter=${FlutterBluePlus.adapterStateNow} '
       'timeout=${_inviteDiscoveryTimeout.inSeconds}s '
       'connected=[${_shareConnectedSummary()}]',
     );
@@ -1996,11 +2002,18 @@ class BleService {
           }
         }
         // TEMP_DEBUG_LOG
-        _shareLogSeen(discovered, target, savedRemoteIds, loggedDevices);
+        _shareLogSeen(discovered, target, savedRemoteIds, loggedDevices, mac);
+        final macHits = _macMatchedRemoteIds(discovered, mac, savedRemoteIds);
+        if (macHits.isNotEmpty) {
+          // TEMP_DEBUG_LOG
+          _shareLog('scan', 'mac match ${macHits.join(', ')} stop');
+          break;
+        }
         final rankedSoFar = _rankedUnsavedRemoteIds(
           discovered,
           target,
           savedRemoteIds,
+          macAddress: mac,
         );
         if (rankedSoFar.isNotEmpty) {
           firstMatchAt ??= DateTime.now();
@@ -2026,7 +2039,15 @@ class BleService {
       _shareLog('scan', 'stop');
     }
 
-    final ranked = _rankedUnsavedRemoteIds(discovered, target, savedRemoteIds);
+    final macHits = _macMatchedRemoteIds(discovered, mac, savedRemoteIds);
+    final ranked = macHits.isNotEmpty
+        ? macHits
+        : _rankedUnsavedRemoteIds(
+            discovered,
+            target,
+            savedRemoteIds,
+            macAddress: mac,
+          );
     debugPrint(
       ranked.isEmpty
           ? 'Shared lock scan found no new "$target" lock'
@@ -2073,6 +2094,7 @@ class BleService {
     String target,
     Set<String> savedRemoteIds,
     Set<String> logged,
+    String mac,
   ) {
     for (final result in results) {
       final remoteId = result.device.remoteId.str;
@@ -2081,25 +2103,30 @@ class BleService {
       final services = result.advertisementData.serviceUuids
           .map((guid) => guid.str)
           .join(',');
+      final manufacturer = _manufacturerDataHex(result);
+      final serviceData = _serviceDataHex(result);
       final reason = _shareSkipReason(
         result,
         target,
         savedRemoteIds,
+        mac,
       );
       final haystack = '${advName.toLowerCase()} ${platformName.toLowerCase()} '
           '${services.toLowerCase()}';
       final interesting = reason == null ||
           result.rssi > -75 ||
           haystack.contains('br38') ||
-          haystack.contains('fee7');
+          haystack.contains('fee7') ||
+          manufacturer.isNotEmpty;
       if (!interesting) continue;
-      final key = '$remoteId|$advName|$platformName|$services|$reason';
+      final key = '$remoteId|$advName|$platformName|$services|$manufacturer|$serviceData|$reason';
       if (!logged.add(key)) continue;
       _shareLog(
         'scan',
         'seen remoteId=$remoteId platformName="$platformName" '
         'platformUnits=${platformName.codeUnits} advName="$advName" '
         'advUnits=${advName.codeUnits} services=[$services] rssi=${result.rssi} '
+        'manufacturerData=[$manufacturer] serviceData=[$serviceData] '
         '${reason == null ? 'candidate' : 'skipped: $reason'}',
       );
     }
@@ -2110,21 +2137,21 @@ class BleService {
     ScanResult result,
     String target,
     Set<String> savedRemoteIds,
+    String mac,
   ) {
     final remoteId = result.device.remoteId.str;
     if (remoteId.isEmpty) return 'empty remoteId';
+    if (mac.isNotEmpty && _advertisementContainsMac(result, mac)) return null;
     final advertised = _normalizedBleName(result.advertisementData.advName);
     final platform = _normalizedBleName(result.device.platformName);
-    final nameMatches = (advertised.isNotEmpty && advertised == target) ||
-        (platform.isNotEmpty && platform == target);
-    if (!nameMatches) {
+    final nameMatches = target.isNotEmpty &&
+        ((advertised.isNotEmpty && advertised == target) ||
+            (platform.isNotEmpty && platform == target));
+    if (!nameMatches && target.isNotEmpty) {
       return 'name mismatch target="$target"';
     }
     final services = result.advertisementData.serviceUuids;
-    if (services.isNotEmpty &&
-        !services.any(
-          (guid) => guid.str.toLowerCase().replaceAll('-', '').contains('fee7'),
-        )) {
+    if (services.isNotEmpty && !_advertisesFee7(result)) {
       return 'service filter no fee7';
     }
     if (savedRemoteIds.contains(remoteId) ||
@@ -2288,26 +2315,225 @@ class BleService {
   static List<String> _rankedUnsavedRemoteIds(
     List<ScanResult> results,
     String target,
-    Set<String> savedRemoteIds,
-  ) {
-    final bestRssi = <String, int>{};
+    Set<String> savedRemoteIds, {
+    String macAddress = '',
+  }) {
+    final macHits = <String, int>{};
+    final nameHits = <String, int>{};
+    final fee7Hits = <String, int>{};
     for (final result in results) {
-      if (!_advertisementMatchesSharedLock(result, target)) continue;
-      final remoteId = LockMac.normalize(result.device.remoteId.str);
-      if (remoteId.isEmpty) continue;
-      if (savedRemoteIds.contains(result.device.remoteId.str) ||
-          savedRemoteIds.contains(remoteId)) {
+      final remoteId = _candidateRemoteId(result.device.remoteId.str);
+      if (remoteId.isEmpty || _isSavedRemoteId(remoteId, savedRemoteIds)) {
         continue;
       }
-      final previous = bestRssi[remoteId];
-      if (previous == null || result.rssi > previous) {
-        bestRssi[remoteId] = result.rssi;
+      _rememberAdvertisedName(remoteId, result);
+      if (macAddress.isNotEmpty &&
+          _advertisementContainsMac(result, macAddress)) {
+        _keepStrongerRssi(macHits, remoteId, result.rssi);
+        continue;
+      }
+      if (target.isNotEmpty && _advertisementNameMatches(result, target)) {
+        _keepStrongerRssi(nameHits, remoteId, result.rssi);
+      }
+      if (_advertisesFee7(result)) {
+        _keepStrongerRssi(fee7Hits, remoteId, result.rssi);
       }
     }
 
-    final ranked = bestRssi.entries.toList(growable: false)
+    if (macHits.isNotEmpty) return _remoteIdsByRssi(macHits);
+    if (nameHits.isNotEmpty) return _remoteIdsByRssi(nameHits);
+    return _remoteIdsByRssi(fee7Hits);
+  }
+
+  static List<String> _macMatchedRemoteIds(
+    List<ScanResult> results,
+    String mac,
+    Set<String> savedRemoteIds,
+  ) {
+    if (!LockMac.isHardwareMac(mac)) return const [];
+    final hits = <String, int>{};
+    for (final result in results) {
+      final remoteId = _candidateRemoteId(result.device.remoteId.str);
+      if (remoteId.isEmpty || _isSavedRemoteId(remoteId, savedRemoteIds)) {
+        continue;
+      }
+      if (!_advertisementContainsMac(result, mac)) continue;
+      _rememberAdvertisedName(remoteId, result);
+      _keepStrongerRssi(hits, remoteId, result.rssi);
+    }
+    return _remoteIdsByRssi(hits);
+  }
+
+  static String _candidateRemoteId(String remoteId) {
+    final trimmed = remoteId.trim();
+    if (trimmed.isEmpty) return '';
+    return LockMac.isMac(trimmed) ? LockMac.normalize(trimmed) : trimmed;
+  }
+
+  static bool _isSavedRemoteId(String remoteId, Set<String> savedRemoteIds) {
+    return savedRemoteIds.contains(remoteId) ||
+        savedRemoteIds.contains(LockMac.normalize(remoteId));
+  }
+
+  static void _keepStrongerRssi(Map<String, int> best, String remoteId, int rssi) {
+    final previous = best[remoteId];
+    if (previous == null || rssi > previous) best[remoteId] = rssi;
+  }
+
+  static List<String> _remoteIdsByRssi(Map<String, int> best) {
+    final ranked = best.entries.toList(growable: false)
       ..sort((a, b) => b.value.compareTo(a.value));
     return [for (final entry in ranked) entry.key];
+  }
+
+  static bool _advertisementNameMatches(ScanResult result, String target) {
+    if (target.isEmpty) return false;
+    final advertised = _normalizedBleName(result.advertisementData.advName);
+    final platform = _normalizedBleName(result.device.platformName);
+    return (advertised.isNotEmpty && advertised == target) ||
+        (platform.isNotEmpty && platform == target);
+  }
+
+  static bool _advertisesFee7(ScanResult result) {
+    final services = result.advertisementData.serviceUuids;
+    if (services.isEmpty) return true;
+    return services.any(
+      (guid) => guid.str.toLowerCase().replaceAll('-', '').contains('fee7'),
+    );
+  }
+
+  static final Map<String, String> _advertisedNamesByRemoteId = {};
+
+  static void _rememberAdvertisedName(String remoteId, ScanResult result) {
+    final name = _advertisedNameFromResult(result);
+    if (name.isEmpty) return;
+    _advertisedNamesByRemoteId[remoteId] = name;
+    _advertisedNamesByRemoteId[result.device.remoteId.str] = name;
+  }
+
+  static String advertisedNameSeen(String remoteId) {
+    final trimmed = remoteId.trim();
+    return _advertisedNamesByRemoteId[trimmed] ??
+        _advertisedNamesByRemoteId[LockMac.normalize(trimmed)] ??
+        '';
+  }
+
+  static String _advertisedNameFromResult(ScanResult result) {
+    final advertised = LockInvite.sanitizeBleName(result.advertisementData.advName);
+    if (advertised.isNotEmpty) return advertised;
+    return LockInvite.sanitizeBleName(result.device.platformName);
+  }
+
+  /// Company ID is little-endian, then the manufacturer payload.
+  static List<int> _manufacturerBytes(int companyId, List<int> payload) {
+    return [companyId & 0xFF, (companyId >> 8) & 0xFF, ...payload];
+  }
+
+  static bool _advertisementContainsMac(ScanResult result, String mac) {
+    if (!LockMac.isHardwareMac(mac)) return false;
+    final forward = _macBytes(mac);
+    final reversed = forward.reversed.toList(growable: false);
+    final payloads = <List<int>>[
+      for (final entry in result.advertisementData.manufacturerData.entries)
+        _manufacturerBytes(entry.key, entry.value),
+      for (final value in result.advertisementData.serviceData.values) value,
+    ];
+    for (final payload in payloads) {
+      if (_containsBytes(payload, forward) || _containsBytes(payload, reversed)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  static List<int> _macBytes(String mac) {
+    final hex = mac.replaceAll(':', '');
+    return [
+      for (var index = 0; index < hex.length; index += 2)
+        int.parse(hex.substring(index, index + 2), radix: 16),
+    ];
+  }
+
+  static bool _containsBytes(List<int> haystack, List<int> needle) {
+    if (needle.isEmpty || haystack.length < needle.length) return false;
+    for (var start = 0; start <= haystack.length - needle.length; start++) {
+      var matches = true;
+      for (var index = 0; index < needle.length; index++) {
+        if (haystack[start + index] != needle[index]) {
+          matches = false;
+          break;
+        }
+      }
+      if (matches) return true;
+    }
+    return false;
+  }
+
+  static String _hexBytes(List<int> bytes) {
+    return bytes
+        .map((byte) => byte.toRadixString(16).padLeft(2, '0'))
+        .join();
+  }
+
+  // TEMP_DEBUG_LOG
+  static String _manufacturerDataHex(ScanResult result) {
+    return result.advertisementData.manufacturerData.entries
+        .map((entry) => _hexBytes(_manufacturerBytes(entry.key, entry.value)))
+        .join(',');
+  }
+
+  // TEMP_DEBUG_LOG
+  static String _serviceDataHex(ScanResult result) {
+    return result.advertisementData.serviceData.entries
+        .map((entry) => '${entry.key.str}:${_hexBytes(entry.value)}')
+        .join(',');
+  }
+
+  /// Reads the live fee7 advertised name for [remoteId] without holding GATT.
+  static Future<String> advertisedNameForLock(String remoteId) async {
+    final id = remoteId.trim();
+    if (id.isEmpty) return '';
+    final normalized = LockMac.isMac(id) ? LockMac.normalize(id) : id;
+    try {
+      return await runExclusive(() async {
+        final discovered = <ScanResult>[];
+        final subscription =
+            FlutterBluePlus.onScanResults.listen(discovered.addAll);
+        final deadline = DateTime.now().add(const Duration(seconds: 4));
+        try {
+          if (!FlutterBluePlus.isScanningNow) {
+            await FlutterBluePlus.startScan(
+              withServices: [_lockServiceUuid],
+              timeout: const Duration(seconds: 4),
+            );
+          }
+          while (DateTime.now().isBefore(deadline)) {
+            for (final result in discovered) {
+              final seen = _candidateRemoteId(result.device.remoteId.str);
+              final idMatch = seen == normalized || seen == id;
+              final macMatch = LockMac.isHardwareMac(normalized) &&
+                  _advertisementContainsMac(result, normalized);
+              if (!idMatch && !macMatch) continue;
+              final name = _advertisedNameFromResult(result);
+              if (name.isEmpty) continue;
+              _rememberAdvertisedName(seen, result);
+              return name;
+            }
+            await Future<void>.delayed(const Duration(milliseconds: 200));
+          }
+        } finally {
+          await subscription.cancel();
+          if (FlutterBluePlus.isScanningNow) {
+            try {
+              await FlutterBluePlus.stopScan();
+            } catch (_) {}
+          }
+        }
+        return '';
+      });
+    } catch (_) {
+      return '';
+    }
   }
 
   static String? _bestRemoteId(

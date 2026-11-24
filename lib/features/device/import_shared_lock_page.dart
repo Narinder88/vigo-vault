@@ -140,7 +140,7 @@ class _ImportSharedLockPageState extends ConsumerState<ImportSharedLockPage> {
     setState(() {
       _error = null;
       _status = useFee7
-          ? 'Verifying nearby ${invite.name} lock...'
+          ? 'Verifying nearby ${invite.savedDisplayName} lock...'
           : 'Saving...';
     });
 
