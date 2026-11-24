@@ -8,7 +8,6 @@ import 'package:fitness_snack_lock/services/pairing_service.dart';
 import 'package:fitness_snack_lock/services/paired_lock_storage.dart';
 import 'package:fitness_snack_lock/services/saved_lock_storage.dart';
 import 'package:fitness_snack_lock/utils/lock_mac.dart';
-import 'package:fitness_snack_lock/utils/share_debug_log.dart'; // TEMP_DEBUG_LOG
 import 'package:flutter/foundation.dart' show debugPrint, kDebugMode, kIsWeb;
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 
@@ -95,15 +94,6 @@ class BleService {
   static void _logHandshake(String message) {
     print('BLE Handshake: $message');
     BleDebugLog.ble(message);
-  }
-
-  // TEMP_DEBUG_LOG
-  static var _shareDebugActive = false;
-
-  // TEMP_DEBUG_LOG
-  static void _shareLog(String tag, String msg) {
-    if (!_shareDebugActive) return;
-    ShareDebugLog.instance.log(tag, msg);
   }
 
   static void _logProvisioning(String stage, String message) {
@@ -1073,11 +1063,6 @@ class BleService {
       })> _resolveHandshakeCharacteristics(BluetoothDevice device) async {
     final services =
         await _discoverServices(device).timeout(_handshakeTimeout);
-    // TEMP_DEBUG_LOG
-    _shareLog(
-      'handshake',
-      'services ${services.map((service) => '${service.uuid.str}[${service.characteristics.map((item) => item.uuid.str).join(',')}]').join(' ')}',
-    );
     return (
       notify: _selectLockNotifyCharacteristic(services),
       write: _selectTokenWriteCharacteristic(services),
@@ -1135,18 +1120,11 @@ class BleService {
     final resolvedKey = encryptKey ?? await _resolveEncryptKey(deviceId);
     final encryptedData = DataService.encrypt(frameHex, resolvedKey);
     if (encryptedData == null) {
-      // TEMP_DEBUG_LOG
-      _shareLog('handshake', 'encrypt failed frameBytes=${frameHex.length ~/ 2}');
       throw LockAuthenticationException(
         deviceId,
         message: 'Failed to encrypt BLE command frame.',
       );
     }
-    // TEMP_DEBUG_LOG
-    _shareLog(
-      'handshake',
-      'sent ${encryptedData.length} bytes frameBytes=${frameHex.length ~/ 2}',
-    );
 
     if (debugLabel != null) {
       _logUnlock(
@@ -1245,25 +1223,17 @@ class BleService {
     final sessionCharacteristics = await _resolveHandshakeCharacteristics(device);
     final notifyCharacteristic = sessionCharacteristics.notify;
     if (notifyCharacteristic == null) {
-      // TEMP_DEBUG_LOG
-      _shareLog('handshake', 'notify characteristic missing');
       return readData(deviceId, timeout: _handshakeNotifyTimeout);
     }
 
     final writeCharacteristic = sessionCharacteristics.write;
     if (writeCharacteristic == null) {
-      // TEMP_DEBUG_LOG
-      _shareLog('handshake', 'write characteristic missing');
       return null;
     }
 
     StreamSubscription<List<int>>? subscription;
     try {
-      // TEMP_DEBUG_LOG
-      _shareLog('handshake', 'notify enable ${notifyCharacteristic.uuid.str}');
       await notifyCharacteristic.setNotifyValue(true).timeout(_handshakeTimeout);
-      // TEMP_DEBUG_LOG
-      _shareLog('handshake', 'notify enabled ${notifyCharacteristic.uuid.str}');
       await _flushStaleNotifyBuffer(notifyCharacteristic);
 
       final completer = Completer<List<int>>();
@@ -1290,8 +1260,6 @@ class BleService {
         onTimeout: () => throw TimeoutException('Token handshake timed out'),
       );
 
-      // TEMP_DEBUG_LOG
-      _shareLog('handshake', 'received ${response.length} bytes');
       final rawHex = DataService.bytesToHexString(response);
       _logHandshake(
         '36F6 raw response (${response.length} bytes, $encryptKeyLabel write key): '
@@ -1336,23 +1304,8 @@ class BleService {
         _logHandshake(
           '$decryptKeyLabel key: AES decrypt failed for $ciphertextHex',
         );
-        // TEMP_DEBUG_LOG
-        _shareLog(
-          'handshake',
-          'decrypt failed bytes=${block.length} label=${candidate.label}',
-        );
         continue;
       }
-      // TEMP_DEBUG_LOG
-      final checksumOk = decryptedResponse.length < 3 ||
-          decryptedResponse[0] != 0x06 ||
-          decryptedResponse[1] != 0x02 ||
-          DataRequestPattern.verifyTokenResponseChecksum(decryptedResponse);
-      _shareLog(
-        'handshake',
-        'decrypt ok plainBytes=${decryptedResponse.length} '
-        'verify=${checksumOk ? 'ok' : 'checksum mismatch'}',
-      );
 
       final decryptedHex = DataService.bytesListToHexString(decryptedResponse);
       _logHandshake(
@@ -1378,16 +1331,12 @@ class BleService {
         _logHandshake(
           '$decryptKeyLabel key: invalid or missing 06 02 token in decrypted frame',
         );
-        // TEMP_DEBUG_LOG
-        _shareLog('handshake', 'token missing');
         continue;
       }
 
       _logHandshake(
         '$decryptKeyLabel key: token parsed successfully ($token)',
       );
-      // TEMP_DEBUG_LOG
-      _shareLog('handshake', 'token ok');
       return (
         token: token,
         decryptKeyLabel: decryptKeyLabel,
@@ -1446,14 +1395,10 @@ class BleService {
           );
           return parsed.token;
         }
-      } on TimeoutException catch (error) {
-        // TEMP_DEBUG_LOG
-        _shareLog('handshake', 'attempt timeout $error');
+      } on TimeoutException {
         continue;
       } catch (error) {
         _logHandshake('Attempt failed ($keyLabel key): $error');
-        // TEMP_DEBUG_LOG
-        _shareLog('handshake', 'attempt error $error');
         continue;
       }
     }
@@ -1892,70 +1837,39 @@ class BleService {
     String macAddress = '',
     Set<String> savedRemoteIds = const {},
   }) async {
-    // TEMP_DEBUG_LOG
-    _shareDebugActive = true;
-    try {
-      // TEMP_DEBUG_LOG
-      _shareLog(
-        'scan',
-        'adapter=${FlutterBluePlus.adapterStateNow} '
-        'connected=[${_shareConnectedSummary()}]',
-      );
-      final candidates = await runExclusive(
-        () => _scanUnsavedRemoteIds(
-          advertisedName,
-          savedRemoteIds,
-          macAddress: macAddress,
-        ),
-      );
-      // TEMP_DEBUG_LOG
-      _shareLog(
-        'scan',
-        candidates.isEmpty
-            ? 'no candidates'
-            : 'candidates ${candidates.join(', ')}',
-      );
-      if (candidates.isEmpty) return null;
+    final candidates = await runExclusive(
+      () => _scanUnsavedRemoteIds(
+        advertisedName,
+        savedRemoteIds,
+        macAddress: macAddress,
+      ),
+    );
+    if (candidates.isEmpty) return null;
 
-      final inviteKey = PairedLockStorage.sanitizeAesKeyHex(aesKey);
-      final invitePassword = PairedLockStorage.sanitizePasswordHex(password);
-      for (final remoteId in candidates) {
-        debugPrint(
-          'Shared lock handshake $remoteId with invite key '
-          '${inviteKey.length >= 8 ? inviteKey.substring(0, 8) : inviteKey}...',
-        );
-        // TEMP_DEBUG_LOG
-        _shareLog(
-          'handshake',
-          'try $remoteId keyBytes=${inviteKey.length ~/ 2} '
-          'keyPrefix=${inviteKey.length >= 4 ? inviteKey.substring(0, 4) : inviteKey} '
-          'passwordLen=${invitePassword.length}',
-        );
-        final accepted = await _handshakeInviteCredentials(
-          remoteId,
-          aesKey: inviteKey,
-          password: invitePassword,
-        );
-        if (accepted) {
-          debugPrint('Shared lock handshake accepted $remoteId');
-          // TEMP_DEBUG_LOG
-          _shareLog('handshake', 'accepted $remoteId');
-          if (FlutterBluePlus.isScanningNow) {
-            try {
-              await FlutterBluePlus.stopScan();
-            } catch (_) {}
-          }
-          return remoteId;
+    final inviteKey = PairedLockStorage.sanitizeAesKeyHex(aesKey);
+    final invitePassword = PairedLockStorage.sanitizePasswordHex(password);
+    for (final remoteId in candidates) {
+      debugPrint(
+        'Shared lock handshake $remoteId with invite key '
+        '${inviteKey.length >= 8 ? inviteKey.substring(0, 8) : inviteKey}...',
+      );
+      final accepted = await _handshakeInviteCredentials(
+        remoteId,
+        aesKey: inviteKey,
+        password: invitePassword,
+      );
+      if (accepted) {
+        debugPrint('Shared lock handshake accepted $remoteId');
+        if (FlutterBluePlus.isScanningNow) {
+          try {
+            await FlutterBluePlus.stopScan();
+          } catch (_) {}
         }
-        debugPrint('Shared lock handshake rejected $remoteId');
-        // TEMP_DEBUG_LOG
-        _shareLog('handshake', 'rejected $remoteId');
+        return remoteId;
       }
-      return null;
-    } finally {
-      // TEMP_DEBUG_LOG
-      _shareDebugActive = false;
+      debugPrint('Shared lock handshake rejected $remoteId');
     }
+    return null;
   }
 
   static const Duration _inviteDiscoveryTimeout = Duration(seconds: 8);
@@ -1972,16 +1886,8 @@ class BleService {
       'Shared lock scan for "$target" '
       '(${_inviteDiscoveryTimeout.inSeconds}s, service fee7)',
     );
-    // TEMP_DEBUG_LOG
-    _shareLog(
-      'scan',
-      'start target="$target" mac="$mac" adapter=${FlutterBluePlus.adapterStateNow} '
-      'timeout=${_inviteDiscoveryTimeout.inSeconds}s '
-      'connected=[${_shareConnectedSummary()}]',
-    );
 
     final discovered = <ScanResult>[];
-    final loggedDevices = <String>{};
     final subscription = FlutterBluePlus.onScanResults.listen(discovered.addAll);
     final deadline = DateTime.now().add(_inviteDiscoveryTimeout);
     DateTime? firstMatchAt;
@@ -1993,22 +1899,12 @@ class BleService {
               withServices: [_lockServiceUuid],
               timeout: _inviteDiscoveryTimeout,
             );
-            // TEMP_DEBUG_LOG
-            _shareLog('scan', 'scanning fee7');
           } catch (error) {
             debugPrint('Shared lock scan restart failed for "$target": $error');
-            // TEMP_DEBUG_LOG
-            _shareLog('scan', 'start error $error');
           }
         }
-        // TEMP_DEBUG_LOG
-        _shareLogSeen(discovered, target, savedRemoteIds, loggedDevices, mac);
         final macHits = _macMatchedRemoteIds(discovered, mac, savedRemoteIds);
-        if (macHits.isNotEmpty) {
-          // TEMP_DEBUG_LOG
-          _shareLog('scan', 'mac match ${macHits.join(', ')} stop');
-          break;
-        }
+        if (macHits.isNotEmpty) break;
         final rankedSoFar = _rankedUnsavedRemoteIds(
           discovered,
           target,
@@ -2026,8 +1922,6 @@ class BleService {
       }
     } catch (error) {
       debugPrint('Shared lock scan failed for "$target": $error');
-      // TEMP_DEBUG_LOG
-      _shareLog('scan', 'failed $error');
     } finally {
       await subscription.cancel();
       if (FlutterBluePlus.isScanningNow) {
@@ -2035,8 +1929,6 @@ class BleService {
           await FlutterBluePlus.stopScan();
         } catch (_) {}
       }
-      // TEMP_DEBUG_LOG
-      _shareLog('scan', 'stop');
     }
 
     final macHits = _macMatchedRemoteIds(discovered, mac, savedRemoteIds);
@@ -2053,112 +1945,7 @@ class BleService {
           ? 'Shared lock scan found no new "$target" lock'
           : 'Shared lock scan candidates ${ranked.join(', ')}',
     );
-    // TEMP_DEBUG_LOG
-    _shareLog(
-      'scan',
-      ranked.isEmpty
-          ? 'ranked none packets=${discovered.length}'
-          : 'ranked ${ranked.join(', ')} packets=${discovered.length}',
-    );
     return ranked;
-  }
-
-  // TEMP_DEBUG_LOG
-  static String _shareConnectedSummary() {
-    return FlutterBluePlus.connectedDevices
-        .map((device) => '${device.remoteId.str}:${device.isConnected}')
-        .join(', ');
-  }
-
-  // TEMP_DEBUG_LOG
-  static Future<void> _shareDisconnect(
-    String id,
-    BluetoothDevice device,
-  ) async {
-    final started = DateTime.now();
-    try {
-      await _forceReleaseDevice(id);
-    } catch (error) {
-      _shareLog('handshake', 'disconnect error $id $error');
-    }
-    _shareLog(
-      'handshake',
-      'disconnect done $id ${DateTime.now().difference(started).inMilliseconds}ms '
-      'connected=${device.isConnected}',
-    );
-  }
-
-  // TEMP_DEBUG_LOG
-  static void _shareLogSeen(
-    List<ScanResult> results,
-    String target,
-    Set<String> savedRemoteIds,
-    Set<String> logged,
-    String mac,
-  ) {
-    for (final result in results) {
-      final remoteId = result.device.remoteId.str;
-      final advName = result.advertisementData.advName;
-      final platformName = result.device.platformName;
-      final services = result.advertisementData.serviceUuids
-          .map((guid) => guid.str)
-          .join(',');
-      final manufacturer = _manufacturerDataHex(result);
-      final serviceData = _serviceDataHex(result);
-      final reason = _shareSkipReason(
-        result,
-        target,
-        savedRemoteIds,
-        mac,
-      );
-      final haystack = '${advName.toLowerCase()} ${platformName.toLowerCase()} '
-          '${services.toLowerCase()}';
-      final interesting = reason == null ||
-          result.rssi > -75 ||
-          haystack.contains('br38') ||
-          haystack.contains('fee7') ||
-          manufacturer.isNotEmpty;
-      if (!interesting) continue;
-      final key = '$remoteId|$advName|$platformName|$services|$manufacturer|$serviceData|$reason';
-      if (!logged.add(key)) continue;
-      _shareLog(
-        'scan',
-        'seen remoteId=$remoteId platformName="$platformName" '
-        'platformUnits=${platformName.codeUnits} advName="$advName" '
-        'advUnits=${advName.codeUnits} services=[$services] rssi=${result.rssi} '
-        'manufacturerData=[$manufacturer] serviceData=[$serviceData] '
-        '${reason == null ? 'candidate' : 'skipped: $reason'}',
-      );
-    }
-  }
-
-  // TEMP_DEBUG_LOG
-  static String? _shareSkipReason(
-    ScanResult result,
-    String target,
-    Set<String> savedRemoteIds,
-    String mac,
-  ) {
-    final remoteId = result.device.remoteId.str;
-    if (remoteId.isEmpty) return 'empty remoteId';
-    if (mac.isNotEmpty && _advertisementContainsMac(result, mac)) return null;
-    final advertised = _normalizedBleName(result.advertisementData.advName);
-    final platform = _normalizedBleName(result.device.platformName);
-    final nameMatches = target.isNotEmpty &&
-        ((advertised.isNotEmpty && advertised == target) ||
-            (platform.isNotEmpty && platform == target));
-    if (!nameMatches && target.isNotEmpty) {
-      return 'name mismatch target="$target"';
-    }
-    final services = result.advertisementData.serviceUuids;
-    if (services.isNotEmpty && !_advertisesFee7(result)) {
-      return 'service filter no fee7';
-    }
-    if (savedRemoteIds.contains(remoteId) ||
-        savedRemoteIds.contains(LockMac.normalize(remoteId))) {
-      return 'already saved';
-    }
-    return null;
   }
 
   static const Duration _inviteHandshakeBudget = Duration(seconds: 5);
@@ -2178,32 +1965,23 @@ class BleService {
       try {
         final accepted = await _inviteConnectAndHandshake(id, device).timeout(
           _inviteHandshakeBudget,
-          onTimeout: () {
-            // TEMP_DEBUG_LOG
-            _shareLog(
-              'handshake',
-              'candidate timeout ${_inviteHandshakeBudget.inMilliseconds}ms $id',
-            );
-            return false;
-          },
+          onTimeout: () => false,
         );
         if (!accepted) {
           clearDeviceCredentials(id);
           await _abortPendingConnect(device);
-          await _shareDisconnect(id, device);
+          await _releaseInviteLink(id);
           return false;
         }
         cacheDeviceEncryptKey(id, aesKey);
         cacheDevicePassword(id, password);
-        await _shareDisconnect(id, device);
+        await _releaseInviteLink(id);
         return true;
       } catch (error) {
         debugPrint('Shared lock handshake error for $id: $error');
-        // TEMP_DEBUG_LOG
-        _shareLog('handshake', 'exception $id $error');
         clearDeviceCredentials(id);
         await _abortPendingConnect(device);
-        await _shareDisconnect(id, device);
+        await _releaseInviteLink(id);
         return false;
       } finally {
         _handshakeEncryptKeyOverride = null;
@@ -2229,17 +2007,7 @@ class BleService {
     }
 
     final connectBudget = remaining();
-    if (connectBudget == Duration.zero) {
-      // TEMP_DEBUG_LOG
-      _shareLog('handshake', 'connect skipped budget exhausted $id');
-      return false;
-    }
-    final connectStarted = DateTime.now();
-    // TEMP_DEBUG_LOG
-    _shareLog(
-      'handshake',
-      'connect start $id budget=${connectBudget.inMilliseconds}ms',
-    );
+    if (connectBudget == Duration.zero) return false;
     try {
       await device
           .connect(
@@ -2248,62 +2016,23 @@ class BleService {
             autoConnect: false,
           )
           .timeout(connectBudget);
-    } on TimeoutException catch (error) {
-      // TEMP_DEBUG_LOG
-      _shareLog(
-        'handshake',
-        'connect timeout ${DateTime.now().difference(connectStarted).inMilliseconds}ms $error',
-      );
+    } on TimeoutException {
       await _abortPendingConnect(device);
       return false;
-    } catch (error) {
-      // TEMP_DEBUG_LOG
-      _shareLog(
-        'handshake',
-        'connect error ${DateTime.now().difference(connectStarted).inMilliseconds}ms $error',
-      );
-      rethrow;
     }
-    // TEMP_DEBUG_LOG
-    _shareLog(
-      'handshake',
-      'connect result connected=${device.isConnected} '
-      '${DateTime.now().difference(connectStarted).inMilliseconds}ms',
-    );
     if (!device.isConnected) return false;
 
     final handshakeBudget = remaining();
     if (handshakeBudget == Duration.zero) {
-      // TEMP_DEBUG_LOG
-      _shareLog('handshake', 'handshake skipped budget exhausted $id');
       await _abortPendingConnect(device);
       return false;
     }
-    final handshakeStarted = DateTime.now();
     final token = await requestToken(id, ignoreConnect: true).timeout(
       handshakeBudget,
-      onTimeout: () {
-        // TEMP_DEBUG_LOG
-        _shareLog(
-          'handshake',
-          'requestToken timeout ${DateTime.now().difference(handshakeStarted).inMilliseconds}ms',
-        );
-        return null;
-      },
-    );
-    // TEMP_DEBUG_LOG
-    _shareLog(
-      'handshake',
-      'requestToken ${ _isValidToken(token) ? 'ok' : 'failed'} '
-      '${DateTime.now().difference(handshakeStarted).inMilliseconds}ms',
+      onTimeout: () => null,
     );
     if (!_isValidToken(token)) {
       await _safeDisconnect(device);
-      // TEMP_DEBUG_LOG
-      _shareLog(
-        'handshake',
-        'disconnect after failed token connected=${device.isConnected}',
-      );
       return false;
     }
     _deviceTokens[id] = token!;
@@ -2469,24 +2198,10 @@ class BleService {
     return false;
   }
 
-  static String _hexBytes(List<int> bytes) {
-    return bytes
-        .map((byte) => byte.toRadixString(16).padLeft(2, '0'))
-        .join();
-  }
-
-  // TEMP_DEBUG_LOG
-  static String _manufacturerDataHex(ScanResult result) {
-    return result.advertisementData.manufacturerData.entries
-        .map((entry) => _hexBytes(_manufacturerBytes(entry.key, entry.value)))
-        .join(',');
-  }
-
-  // TEMP_DEBUG_LOG
-  static String _serviceDataHex(ScanResult result) {
-    return result.advertisementData.serviceData.entries
-        .map((entry) => '${entry.key.str}:${_hexBytes(entry.value)}')
-        .join(',');
+  static Future<void> _releaseInviteLink(String id) async {
+    try {
+      await _forceReleaseDevice(id);
+    } catch (_) {}
   }
 
   /// Reads the live fee7 advertised name for [remoteId] without holding GATT.
@@ -2591,48 +2306,17 @@ class BleService {
   /// Brief connect-and-disconnect that nudges the padlock into fast advertising.
   /// Does not send an unlock command. Failures are ignored.
   static Future<void> wakeLockForSharing(String remoteId) async {
-    final started = DateTime.now();
-    // TEMP_DEBUG_LOG
-    final restoreDebug = _shareDebugActive;
-    _shareDebugActive = true;
     try {
       final id = LockMac.normalize(remoteId.trim());
-      // TEMP_DEBUG_LOG
-      _shareLog(
-        'wake',
-        'start remoteId=$remoteId normalized=$id '
-        'adapter=${FlutterBluePlus.adapterStateNow}',
-      );
-      if (id.isEmpty) {
-        // TEMP_DEBUG_LOG
-        _shareLog('wake', 'skipped empty id');
-        return;
-      }
+      if (id.isEmpty) return;
       await runExclusive(() => _wakeLockForSharing(id));
-      // TEMP_DEBUG_LOG
-      _shareLog(
-        'wake',
-        'finished ${DateTime.now().difference(started).inMilliseconds}ms',
-      );
-    } catch (error) {
-      // TEMP_DEBUG_LOG
-      _shareLog(
-        'wake',
-        'error ${DateTime.now().difference(started).inMilliseconds}ms $error',
-      );
-    } finally {
-      // TEMP_DEBUG_LOG
-      _shareDebugActive = restoreDebug;
-    }
+    } catch (_) {}
   }
 
   static Future<void> _wakeLockForSharing(String id) async {
     final device = BluetoothDevice.fromId(id);
-    final connectStarted = DateTime.now();
     try {
       await _stopScanBeforeConnect();
-      // TEMP_DEBUG_LOG
-      _shareLog('wake', 'connect start $id');
       await device
           .connect(
             timeout: _shareWakeTimeout,
@@ -2640,35 +2324,10 @@ class BleService {
             autoConnect: false,
           )
           .timeout(_shareWakeTimeout);
-      // TEMP_DEBUG_LOG
-      _shareLog(
-        'wake',
-        'connected ${DateTime.now().difference(connectStarted).inMilliseconds}ms '
-        'isConnected=${device.isConnected}',
-      );
-    } catch (error) {
-      // TEMP_DEBUG_LOG
-      _shareLog(
-        'wake',
-        'connect error/timeout ${DateTime.now().difference(connectStarted).inMilliseconds}ms $error',
-      );
-    }
-    final disconnectStarted = DateTime.now();
+    } catch (_) {}
     try {
       await device.disconnect(queue: false).timeout(const Duration(seconds: 2));
-      // TEMP_DEBUG_LOG
-      _shareLog(
-        'wake',
-        'disconnected ${DateTime.now().difference(disconnectStarted).inMilliseconds}ms '
-        'isConnected=${device.isConnected}',
-      );
-    } catch (error) {
-      // TEMP_DEBUG_LOG
-      _shareLog(
-        'wake',
-        'disconnect error/timeout ${DateTime.now().difference(disconnectStarted).inMilliseconds}ms $error',
-      );
-    }
+    } catch (_) {}
     _resetHandshakeState(id);
     if (_connectedDevice != null &&
         LockMac.normalize(_connectedDevice!.remoteId.str) == id) {
