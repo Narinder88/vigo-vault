@@ -2,16 +2,15 @@ import 'dart:ui' show lerpDouble;
 
 import 'package:fitness_snack_lock/constants/app_branding.dart';
 import 'package:fitness_snack_lock/features/device/helpful_tips_page.dart';
+import 'package:fitness_snack_lock/features/lock/home_page.dart';
 import 'package:fitness_snack_lock/features/device/device_scanning_page/device_scanning_page.dart';
 import 'package:fitness_snack_lock/features/device/share_lock_dialog.dart';
 import 'package:fitness_snack_lock/models/saved_lock.dart';
 import 'package:fitness_snack_lock/providers/ble_provider.dart';
 import 'package:fitness_snack_lock/providers/lock_unlock_event_provider.dart';
-import 'package:fitness_snack_lock/providers/notification_manager_provider.dart';
 import 'package:fitness_snack_lock/providers/saved_locks_provider.dart';
 import 'package:fitness_snack_lock/services/ble_connection_monitor.dart';
 import 'package:fitness_snack_lock/services/ble_service.dart';
-import 'package:fitness_snack_lock/services/pairing_service.dart';
 import 'package:fitness_snack_lock/services/lock_connection_helper.dart';
 import 'package:fitness_snack_lock/utils/battery_level.dart';
 import 'package:fitness_snack_lock/utils/lock_mac.dart';
@@ -59,61 +58,6 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
 
   Future<void> _initializeDashboardBle() async {
     await _releaseStaleBleSessions();
-  }
-
-  int _beginLockSession(String lockId) {
-    // Foreground tap takes ownership — invalidate warm-up cleanup for this lock.
-    _backgroundWarmUpGenerationByLockId[lockId] =
-        (_backgroundWarmUpGenerationByLockId[lockId] ?? 0) + 1;
-
-    final generation = (_sessionGenerationByLockId[lockId] ?? 0) + 1;
-    _sessionGenerationByLockId[lockId] = generation;
-    if (!mounted) {
-      _sessionLockIds.add(lockId);
-      _connectingLockId = lockId;
-      return generation;
-    }
-    setState(() {
-      _sessionLockIds.add(lockId);
-      _connectingLockId = lockId;
-    });
-    return generation;
-  }
-
-  void _endLockSession(
-    String lockId, {
-    required bool success,
-    required int sessionGeneration,
-  }) {
-    final currentGeneration = _sessionGenerationByLockId[lockId];
-    if (currentGeneration != sessionGeneration) {
-      return;
-    }
-
-    if (!success) {
-      final ble = ref.read(bleProvider.notifier).value;
-      final bleStillConnecting = ble.isConnecting &&
-          (ble.connectingDeviceId == lockId ||
-              ble.device?.remoteId.str == lockId);
-      if (LockConnectionHelper.hasPendingConnect(lockId) ||
-          bleStillConnecting) {
-        return;
-      }
-
-      if (LockConnectionHelper.isValidToken(
-        BleService.tokenForDevice(lockId),
-      )) {
-        _markLockUnlockReady(lockId);
-        _sessionLockIds.remove(lockId);
-        _clearConnectingLockId(lockId);
-        return;
-      }
-
-      _clearLockUnlockReady(lockId);
-    }
-
-    _sessionLockIds.remove(lockId);
-    _clearConnectingLockId(lockId);
   }
 
   void _clearConnectingLockId(String lockId) {
@@ -174,64 +118,23 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
   }
 
   Future<void> _openLock(SavedLock lock) async {
-    if (_connectingLockId != null) return;
-    final sessionGen = _beginLockSession(lock.id);
-    try {
-      final unlocked = await BleService.unlockLock(lock.id);
-      if (!mounted) return;
-      final battery = persistableBatteryLevel(
-        BleService.lastFreshBatteryLevel(lock.id),
-      );
-      if (battery != null) {
-        await ref.read(savedLocksProvider.notifier).updateTelemetry(
-              lockId: lock.id,
-              batteryLevel: battery,
-            );
-        if (!mounted) return;
-        await ref
-            .read(notificationManagerProvider.notifier)
-            .createReachBatteryNotification(
-              lockId: lock.id,
-              displayName: lock.displayName,
-              level: battery,
-            );
-      }
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            unlocked
-                ? '${lock.displayName} unlocked.'
-                : 'Could not unlock ${lock.displayName}. Move closer and try again.',
-          ),
-          behavior: SnackBarBehavior.floating,
+    await ref.read(savedLocksProvider.notifier).setActiveLockId(lock.id);
+    if (!mounted) return;
+
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (routeContext) => HomePage(
+          lockDeviceId: lock.id,
+          onUnlockSuccess: () {},
+          onBackToDashboard: () {
+            final navigator = Navigator.maybeOf(routeContext);
+            if (navigator != null && navigator.canPop()) {
+              navigator.pop();
+            }
+          },
         ),
-      );
-    } on LockAuthenticationException catch (error) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            error.message ??
-                'Could not unlock ${lock.displayName}. Move closer and try again.',
-          ),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
-    } catch (_) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            'Could not unlock ${lock.displayName}. Move closer and try again.',
-          ),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
-    } finally {
-      _clearLockUnlockReady(lock.id);
-      _endLockSession(lock.id, success: true, sessionGeneration: sessionGen);
-    }
+      ),
+    );
   }
 
   Future<void> _addLock() async {
