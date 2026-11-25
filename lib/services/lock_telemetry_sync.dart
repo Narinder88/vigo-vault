@@ -4,6 +4,7 @@ import 'package:fitness_snack_lock/providers/saved_locks_provider.dart';
 import 'package:fitness_snack_lock/services/ble_connection_monitor.dart';
 import 'package:fitness_snack_lock/services/ble_service.dart';
 import 'package:fitness_snack_lock/services/lock_connection_helper.dart';
+import 'package:fitness_snack_lock/utils/battery_level.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -50,11 +51,25 @@ class LockTelemetrySync {
           ignoreConnect: true,
           token: token,
         );
-        if (batteryLevel >= 0) {
-          ref.read(bleProvider.notifier).setBatteryLevel(batteryLevel);
+        final persistedBattery = persistableBatteryLevel(batteryLevel);
+        if (persistedBattery != null) {
+          ref.read(bleProvider.notifier).setBatteryLevel(persistedBattery);
+          await ref.read(savedLocksProvider.notifier).updateTelemetry(
+                lockId: deviceId,
+                batteryLevel: persistedBattery,
+              );
+          final displayName = ref
+                  .read(savedLocksProvider.notifier)
+                  .lockById(deviceId)
+                  ?.displayName ??
+              'Lock';
           await ref
               .read(notificationManagerProvider.notifier)
-              .createReachBatteryNotification(batteryLevel);
+              .createReachBatteryNotification(
+                lockId: deviceId,
+                displayName: displayName,
+                level: persistedBattery,
+              );
         }
       }
 

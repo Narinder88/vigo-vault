@@ -7,6 +7,7 @@ import 'package:fitness_snack_lock/services/lock_invite.dart';
 import 'package:fitness_snack_lock/services/pairing_service.dart';
 import 'package:fitness_snack_lock/services/paired_lock_storage.dart';
 import 'package:fitness_snack_lock/services/saved_lock_storage.dart';
+import 'package:fitness_snack_lock/utils/battery_level.dart';
 import 'package:fitness_snack_lock/utils/lock_mac.dart';
 import 'package:flutter/foundation.dart' show debugPrint, kIsWeb;
 import 'package:flutter_riverpod/legacy.dart';
@@ -301,7 +302,10 @@ class SavedLocksNotifier extends StateNotifier<SavedLocksState> {
       id: id,
       displayName: displayName,
       hardwareName: rememberedHardware ?? existing?.hardwareName,
-      lastBatteryLevel: batteryLevel,
+      lastBatteryLevel: retainedBatteryLevel(
+        batteryLevel,
+        existing?.lastBatteryLevel,
+      ),
       lastRssi: rssi ?? existing?.lastRssi ?? -100,
       lastConnectedAt: DateTime.now(),
     );
@@ -506,7 +510,10 @@ class SavedLocksNotifier extends StateNotifier<SavedLocksState> {
     if (existing == null) return;
 
     final updated = existing.copyWith(
-      lastBatteryLevel: batteryLevel ?? existing.lastBatteryLevel,
+      lastBatteryLevel: retainedBatteryLevel(
+        batteryLevel,
+        existing.lastBatteryLevel,
+      ),
       lastRssi: rssi ?? existing.lastRssi,
       lastConnectedAt: DateTime.now(),
     );

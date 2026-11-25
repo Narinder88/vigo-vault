@@ -63,7 +63,8 @@ class BleProvider extends StateNotifier<BleData> {
   }
 
   void setBatteryLevel(int? batteryLevel) {
-    if (batteryLevel == null || batteryLevel < 0) return;
+    // `0` is the unread/disconnected default, not a measured percentage.
+    if (batteryLevel == null || batteryLevel <= 0) return;
 
     state = (
       device: state.device,
@@ -187,12 +188,19 @@ class BleProvider extends StateNotifier<BleData> {
     String? customDeviceName,
     bool requiresClaiming = false,
   }) {
+    final currentId = state.device?.remoteId.str;
+    final sameDevice = currentId != null &&
+        LockMac.normalize(currentId) == LockMac.normalize(device.remoteId.str);
+    final measured = (batteryLevel != null && batteryLevel > 0)
+        ? batteryLevel
+        : null;
+
     state = (
       device: device,
       rssi: rssi ?? state.rssi,
-      batteryLevel: (batteryLevel != null && batteryLevel >= 0)
-          ? batteryLevel
-          : state.batteryLevel,
+      // Keep this lock's last real percentage. A 0/null read must not copy
+      // another lock's level onto this session.
+      batteryLevel: measured ?? (sameDevice ? state.batteryLevel : 0),
       token: token,
       customDeviceName: customDeviceName ?? state.customDeviceName,
       isConnecting: false,

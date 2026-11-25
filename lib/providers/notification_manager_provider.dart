@@ -1,6 +1,9 @@
 import 'package:awesome_notifications/awesome_notifications.dart';
 import 'package:cron/cron.dart';
+import 'package:fitness_snack_lock/utils/battery_level.dart';
+import 'package:fitness_snack_lock/utils/lock_mac.dart';
 import 'package:flutter_riverpod/legacy.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 typedef NotificationManagerData = ({bool ready});
 
@@ -14,41 +17,64 @@ class NotificationManagerProvider
   NotificationManagerProvider() : super((ready: true));
 
   final cron = Cron();
-  Map<String, int> showBatteryNotificationCount = {
-    '0': 0,
-    '20': 0,
-  };
 
-  void resetShowBatteryNotificationCount() {
-    showBatteryNotificationCount = {
-      '0': 0,
-      '20': 0,
-    };
+  static const _cooldown = Duration(hours: 24);
+  static const _notifiedAtKeyPrefix = 'smart_lock_low_battery_notified_at_';
+
+  /// Alerts only for a real 1%–20% reading, at most once per lock per day.
+  ///
+  /// `0` and `null` are unread or disconnected defaults and never notify.
+  /// The cooldown timestamp and notification id are both keyed by lock id, so
+  /// one low lock cannot suppress or replace another lock's alert.
+  Future<void> createReachBatteryNotification({
+    required String lockId,
+    required String displayName,
+    required int? level,
+  }) async {
+    final reading = persistableBatteryLevel(level);
+    if (reading == null || reading > 20) return;
+
+    final id = LockMac.normalize(lockId);
+    if (id.isEmpty) return;
+
+    final prefs = await SharedPreferences.getInstance();
+    final cooldownKey = '$_notifiedAtKeyPrefix$id';
+    final lastNotifiedMs = prefs.getInt(cooldownKey);
+    if (lastNotifiedMs != null) {
+      final lastNotified = DateTime.fromMillisecondsSinceEpoch(lastNotifiedMs);
+      if (DateTime.now().difference(lastNotified) < _cooldown) return;
+    }
+
+    final name = displayName.trim().isEmpty ? 'Lock' : displayName.trim();
+    await createBasePadlockNotification(
+      _notificationIdForLock(id),
+      'Low battery',
+      '$name battery is low ($reading%). Please charge soon.',
+      lockId: id,
+      level: reading,
+    );
+    await prefs.setInt(cooldownKey, DateTime.now().millisecondsSinceEpoch);
   }
 
-  Future<void> createReachBatteryNotification(int level) async {
-    if (level < 0) return;
-
-    if (level <= 20) {
-      if (showBatteryNotificationCount['20'] == 0) {
-        final title = level == 0
-            ? '🔴 Battery Critically Low – Charge Immediately'
-            : '🔔 Battery Low – Please Charge Your Lock';
-        final body = level == 0
-            ? 'Your padlock battery is at 0%. Charge now to ensure continued access and prevent a complete shutdown.'
-            : 'Your padlock is at $level%. Charge it soon to avoid being locked out.';
-
-        await createBasePadlockNotification(20, title, body);
-        showBatteryNotificationCount['20'] = 1;
-      }
+  /// Stable id in a dedicated band so locks do not share notification 20.
+  static int _notificationIdForLock(String lockId) {
+    const fnvOffset = 0x811c9dc5;
+    const fnvPrime = 0x01000193;
+    var hash = fnvOffset;
+    for (final unit in lockId.codeUnits) {
+      hash ^= unit;
+      hash = (hash * fnvPrime) & 0x7fffffff;
     }
+    return 100000 + (hash % 900000);
   }
 
   Future<void> createBasePadlockNotification(
     int id,
     String title,
-    String content,
-  ) async {
+    String content, {
+    String? lockId,
+    int? level,
+  }) async {
     await AwesomeNotifications().createNotification(
       content: NotificationContent(
         id: id,
@@ -57,7 +83,10 @@ class NotificationManagerProvider
         body: content,
         wakeUpScreen: true,
         category: NotificationCategory.Reminder,
-        payload: {'percent': '100'},
+        payload: {
+          if (lockId != null) 'lockId': lockId,
+          'percent': '${level ?? ''}',
+        },
         autoDismissible: false,
         notificationLayout: NotificationLayout.BigText,
       ),
@@ -71,6 +100,6 @@ class NotificationManagerProvider
   }
 
   void syncDataPerPeriod() {
-    resetShowBatteryNotificationCount();
+    // Per-lock cooldown timestamps expire on their own after 24 hours.
   }
 }

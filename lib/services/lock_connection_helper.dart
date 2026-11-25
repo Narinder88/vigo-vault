@@ -8,6 +8,7 @@ import 'package:fitness_snack_lock/services/ble_debug_log.dart';
 import 'package:fitness_snack_lock/services/ble_service.dart';
 import 'package:fitness_snack_lock/services/pairing_service.dart';
 import 'package:fitness_snack_lock/services/saved_lock_storage.dart';
+import 'package:fitness_snack_lock/utils/battery_level.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 
 class LockConnectionHelper {
@@ -66,7 +67,9 @@ class LockConnectionHelper {
     SavedLocksNotifier? locksNotifier,
     NotificationManagerProvider? notificationManager,
   }) async {
-    final batteryLevel = BleService.lastFreshBatteryLevel(deviceId);
+    final batteryLevel = persistableBatteryLevel(
+      BleService.lastFreshBatteryLevel(deviceId),
+    );
     if (batteryLevel == null) return;
 
     bleNotifier.setBatteryLevel(batteryLevel);
@@ -77,7 +80,13 @@ class LockConnectionHelper {
       );
     }
     if (notificationManager != null) {
-      await notificationManager.createReachBatteryNotification(batteryLevel);
+      final displayName =
+          locksNotifier?.lockById(deviceId)?.displayName ?? 'Lock';
+      await notificationManager.createReachBatteryNotification(
+        lockId: deviceId,
+        displayName: displayName,
+        level: batteryLevel,
+      );
     }
   }
 
@@ -223,9 +232,11 @@ class LockConnectionHelper {
         await SavedLockStorage.setActiveLockId(deviceId);
       }
 
-      if (readings.batteryLevel != null && notificationManager != null) {
+      if (notificationManager != null) {
         await notificationManager.createReachBatteryNotification(
-          readings.batteryLevel!,
+          lockId: deviceId,
+          displayName: displayName,
+          level: readings.batteryLevel,
         );
       }
 

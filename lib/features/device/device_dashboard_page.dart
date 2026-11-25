@@ -1,17 +1,19 @@
 import 'dart:ui' show lerpDouble;
 
 import 'package:fitness_snack_lock/constants/app_branding.dart';
-import 'package:fitness_snack_lock/features/device/app_info_sheet.dart';
+import 'package:fitness_snack_lock/features/device/helpful_tips_page.dart';
 import 'package:fitness_snack_lock/features/device/device_scanning_page/device_scanning_page.dart';
 import 'package:fitness_snack_lock/features/device/share_lock_dialog.dart';
 import 'package:fitness_snack_lock/models/saved_lock.dart';
 import 'package:fitness_snack_lock/providers/ble_provider.dart';
 import 'package:fitness_snack_lock/providers/lock_unlock_event_provider.dart';
+import 'package:fitness_snack_lock/providers/notification_manager_provider.dart';
 import 'package:fitness_snack_lock/providers/saved_locks_provider.dart';
 import 'package:fitness_snack_lock/services/ble_connection_monitor.dart';
 import 'package:fitness_snack_lock/services/ble_service.dart';
 import 'package:fitness_snack_lock/services/pairing_service.dart';
 import 'package:fitness_snack_lock/services/lock_connection_helper.dart';
+import 'package:fitness_snack_lock/utils/battery_level.dart';
 import 'package:fitness_snack_lock/utils/lock_mac.dart';
 import 'package:fitness_snack_lock/utils/rssi_utils.dart';
 import 'package:fitness_snack_lock/widgets/rename_lock_dialog.dart';
@@ -177,11 +179,21 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
     try {
       final unlocked = await BleService.unlockLock(lock.id);
       if (!mounted) return;
-      final battery = BleService.lastFreshBatteryLevel(lock.id);
-      if (battery != null && battery >= 0) {
+      final battery = persistableBatteryLevel(
+        BleService.lastFreshBatteryLevel(lock.id),
+      );
+      if (battery != null) {
         await ref.read(savedLocksProvider.notifier).updateTelemetry(
               lockId: lock.id,
               batteryLevel: battery,
+            );
+        if (!mounted) return;
+        await ref
+            .read(notificationManagerProvider.notifier)
+            .createReachBatteryNotification(
+              lockId: lock.id,
+              displayName: lock.displayName,
+              level: battery,
             );
       }
       if (!mounted) return;
@@ -575,17 +587,22 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
     }
   }
 
-  ({int? battery, int? rssi}) _lockTelemetry(SavedLock lock, BleData bleState) {
+  /// Live percentage when this lock has a real reading, otherwise the last
+  /// saved percentage above 0. `0` and `null` stay unread.
+  int? _knownBatteryLevel(SavedLock lock, BleData bleState) {
     if (_isLockConnected(lock, bleState)) {
-      return (
-        battery: bleState.batteryLevel > 0 ? bleState.batteryLevel : null,
-        rssi: isRssiAvailable(bleState.rssi) ? bleState.rssi : null,
-      );
+      final live = persistableBatteryLevel(bleState.batteryLevel);
+      if (live != null) return live;
     }
+    return persistableBatteryLevel(lock.lastBatteryLevel);
+  }
 
+  ({int? battery, int? rssi}) _lockTelemetry(SavedLock lock, BleData bleState) {
+    final connected = _isLockConnected(lock, bleState);
+    final rssi = connected ? bleState.rssi : lock.lastRssi;
     return (
-      battery: lock.lastBatteryLevel,
-      rssi: isRssiAvailable(lock.lastRssi) ? lock.lastRssi : null,
+      battery: _knownBatteryLevel(lock, bleState),
+      rssi: isRssiAvailable(rssi) ? rssi : null,
     );
   }
 
@@ -648,11 +665,10 @@ class _DeviceDashboardPageState extends ConsumerState<DeviceDashboardPage> {
             IconButton(
               tooltip: 'Info',
               onPressed: () {
-                showModalBottomSheet<void>(
-                  context: context,
-                  backgroundColor: _cardColor,
-                  showDragHandle: true,
-                  builder: (context) => const AppInfoSheet(),
+                Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => const HelpfulTipsPage(),
+                  ),
                 );
               },
               icon: const Icon(Icons.info_outline, color: _labelColor),
@@ -808,6 +824,8 @@ class _LockCard extends StatelessWidget {
   static const _labelColor = Color(0xFFFFFFFF);
   static const _subtextColor = Color(0xFF9E9E9E);
   static const _accentColor = Color(0xFF00E676);
+  static const _lowBatteryColor = Color(0xFFEF5350);
+  static const _lowBatteryTextColor = Color(0xFFFF8A80);
   static const _cardBorderRadius = 16.0;
 
   static const _steelBorderGradient = LinearGradient(
@@ -869,13 +887,17 @@ class _LockCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    const innerRadius = _cardBorderRadius - 1;
+    final lowBattery = isLowBatteryLevel(batteryLevel);
+    final borderWidth = lowBattery ? 2.0 : 1.0;
+    final innerRadius = _cardBorderRadius - borderWidth;
+    final batteryColor = lowBattery ? _lowBatteryColor : _subtextColor;
 
     return Container(
-      padding: const EdgeInsets.all(1),
+      padding: EdgeInsets.all(borderWidth),
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(_cardBorderRadius),
-        gradient: _steelBorderGradient,
+        gradient: lowBattery ? null : _steelBorderGradient,
+        color: lowBattery ? _lowBatteryColor : null,
       ),
       child: Material(
         color: _cardColor,
@@ -893,118 +915,146 @@ class _LockCard extends StatelessWidget {
           borderRadius: BorderRadius.circular(innerRadius),
           child: Padding(
             padding: const EdgeInsets.all(16),
-            child: Row(
-            children: [
-              _buildLockAvatar(),
-              const SizedBox(width: 14),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
                   children: [
-                    Row(
-                      children: [
-                        Flexible(
-                          child: Text(
-                            lock.displayName,
+                    _buildLockAvatar(),
+                    const SizedBox(width: 14),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Flexible(
+                                child: Text(
+                                  lock.displayName,
+                                  style: const TextStyle(
+                                    color: _labelColor,
+                                    fontSize: 17,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                              if (lock.isPinned) ...[
+                                const SizedBox(width: 6),
+                                const Icon(
+                                  PhosphorIconsRegular.pushPin,
+                                  size: 14,
+                                  color: _subtextColor,
+                                ),
+                              ],
+                            ],
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            lock.hardwareName ?? lock.id,
                             style: const TextStyle(
-                              color: _labelColor,
-                              fontSize: 17,
-                              fontWeight: FontWeight.w600,
+                              color: _subtextColor,
+                              fontSize: 12,
                             ),
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                           ),
-                        ),
-                        if (lock.isPinned) ...[
-                          const SizedBox(width: 6),
-                          const Icon(
-                            PhosphorIconsRegular.pushPin,
-                            size: 14,
-                            color: _subtextColor,
+                          const SizedBox(height: 8),
+                          Wrap(
+                            spacing: 10,
+                            runSpacing: 6,
+                            crossAxisAlignment: WrapCrossAlignment.center,
+                            children: [
+                              if (isConnecting)
+                                Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    const SizedBox(
+                                      width: 14,
+                                      height: 14,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                        color: _accentColor,
+                                      ),
+                                    ),
+                                    const SizedBox(width: 6),
+                                    Text(
+                                      _connectionLabel,
+                                      style: const TextStyle(
+                                        color: _accentColor,
+                                        fontSize: 13,
+                                        fontWeight: FontWeight.w500,
+                                      ),
+                                    ),
+                                  ],
+                                )
+                              else
+                                _LockDetailChip(
+                                  icon: PhosphorIconsRegular.bluetoothSlash,
+                                  label: _connectionLabel,
+                                  color: _subtextColor,
+                                ),
+                              if (batteryLevel != null)
+                                _LockDetailChip(
+                                  icon: PhosphorIconsRegular.batteryHigh,
+                                  label: '$batteryLevel%',
+                                  color: batteryColor,
+                                ),
+                              if (isConnected && rssi != null)
+                                _LockDetailChip(
+                                  icon: PhosphorIconsRegular.cellSignalHigh,
+                                  label: formatRssiWithLabel(rssi!),
+                                  color: _subtextColor,
+                                ),
+                            ],
                           ),
                         ],
-                      ],
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      lock.hardwareName ?? lock.id,
-                      style: const TextStyle(
-                        color: _subtextColor,
-                        fontSize: 12,
                       ),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
                     ),
-                    const SizedBox(height: 8),
-                    Wrap(
-                      spacing: 10,
-                      runSpacing: 6,
-                      crossAxisAlignment: WrapCrossAlignment.center,
-                      children: [
-                        if (isConnecting)
-                          Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              const SizedBox(
-                                width: 14,
-                                height: 14,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                  color: _accentColor,
-                                ),
-                              ),
-                              const SizedBox(width: 6),
-                              Text(
-                                _connectionLabel,
-                                style: const TextStyle(
-                                  color: _accentColor,
-                                  fontSize: 13,
-                                  fontWeight: FontWeight.w500,
-                                ),
-                              ),
-                            ],
-                          )
-                        else
-                          _LockDetailChip(
-                            icon: PhosphorIconsRegular.bluetoothSlash,
-                            label: _connectionLabel,
-                            color: _subtextColor,
-                          ),
-                        if (batteryLevel != null)
-                          _LockDetailChip(
-                            icon: PhosphorIconsRegular.batteryHigh,
-                            label: '$batteryLevel%',
-                            color: _subtextColor,
-                          ),
-                        if (isConnected && rssi != null)
-                          _LockDetailChip(
-                            icon: PhosphorIconsRegular.cellSignalHigh,
-                            label: formatRssiWithLabel(rssi!),
-                            color: _subtextColor,
-                          ),
-                      ],
+                    IconButton(
+                      onPressed: onMenuTap,
+                      constraints: const BoxConstraints(
+                        minWidth: 36,
+                        minHeight: 36,
+                      ),
+                      padding: EdgeInsets.zero,
+                      visualDensity: VisualDensity.compact,
+                      icon: const Icon(
+                        PhosphorIconsRegular.dotsThreeVertical,
+                        color: _labelColor,
+                      ),
                     ),
                   ],
                 ),
-              ),
-              IconButton(
-                onPressed: onMenuTap,
-                constraints: const BoxConstraints(
-                  minWidth: 36,
-                  minHeight: 36,
-                ),
-                padding: EdgeInsets.zero,
-                visualDensity: VisualDensity.compact,
-                icon: const Icon(
-                  PhosphorIconsRegular.dotsThreeVertical,
-                  color: _labelColor,
-                ),
-              ),
-            ],
+                if (lowBattery) ...[
+                  const SizedBox(height: 10),
+                  const Row(
+                    children: [
+                      Icon(
+                        PhosphorIconsRegular.warning,
+                        size: 15,
+                        color: _lowBatteryColor,
+                      ),
+                      SizedBox(width: 6),
+                      Flexible(
+                        child: Text(
+                          'Low battery — charge soon',
+                          style: TextStyle(
+                            color: _lowBatteryTextColor,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ],
+            ),
           ),
         ),
       ),
-    ),
     );
   }
 }

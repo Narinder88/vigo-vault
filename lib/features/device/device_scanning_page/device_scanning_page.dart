@@ -173,6 +173,14 @@ class _DeviceScanningPageState extends ConsumerState<DeviceScanningPage> {
     final deviceId = scanResult.device.remoteId.str;
     final displayName = LockConnectionHelper.defaultDisplayName(scanResult.device);
     final hardwareName = LockConnectionHelper.hardwareName(scanResult.device);
+    final savedDisplayName = ref
+        .read(savedLocksProvider.notifier)
+        .lockById(deviceId)
+        ?.displayName;
+    final notifyName =
+        (savedDisplayName != null && savedDisplayName.trim().isNotEmpty)
+            ? savedDisplayName.trim()
+            : displayName;
     try {
       _dismissConnectionSheet(sheetContext);
 
@@ -192,11 +200,13 @@ class _DeviceScanningPageState extends ConsumerState<DeviceScanningPage> {
             customDeviceName: displayName,
           );
 
-      if (batteryLevel != null) {
-        await ref
-            .read(notificationManagerProvider.notifier)
-            .createReachBatteryNotification(batteryLevel);
-      }
+      await ref
+          .read(notificationManagerProvider.notifier)
+          .createReachBatteryNotification(
+            lockId: deviceId,
+            displayName: notifyName,
+            level: batteryLevel,
+          );
 
       await _refreshSavedLockIds();
       _connectSessionActive = false;

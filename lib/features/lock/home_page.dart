@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:fitness_snack_lock/constants/app_branding.dart';
+import 'package:fitness_snack_lock/features/device/helpful_tips_page.dart';
 import 'package:fitness_snack_lock/features/device/share_lock_dialog.dart';
 import 'package:fitness_snack_lock/features/device/device_scanning_page/device_scanning_page.dart';
 import 'package:fitness_snack_lock/providers/ble_provider.dart';
@@ -186,7 +187,8 @@ class _HomePageState extends ConsumerState<HomePage>
   }
 
   Future<void> _saveCustomDeviceName(String name) async {
-    final lockId = widget.lockDeviceId ?? ref.read(bleProvider).device?.remoteId.str;
+    final lockId =
+        widget.lockDeviceId ?? ref.read(bleProvider).device?.remoteId.str;
     if (lockId == null) return;
 
     ref.read(bleProvider.notifier).setCustomDeviceName(name);
@@ -236,6 +238,17 @@ class _HomePageState extends ConsumerState<HomePage>
     if (!mounted || newName == null || newName.isEmpty) return;
 
     await _saveCustomDeviceName(newName);
+  }
+
+  Future<void> _showHelpfulTips() async {
+    await _closeDrawerIfOpen();
+    if (!mounted) return;
+
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => const HelpfulTipsPage(),
+      ),
+    );
   }
 
   Future<void> _showAboutDialog() async {
@@ -359,7 +372,8 @@ class _HomePageState extends ConsumerState<HomePage>
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Password rescue failed. Stay near the lock and try again.'),
+          content:
+              Text('Password rescue failed. Stay near the lock and try again.'),
           behavior: SnackBarBehavior.floating,
         ),
       );
@@ -376,9 +390,8 @@ class _HomePageState extends ConsumerState<HomePage>
     return Padding(
       padding: const EdgeInsets.only(top: 24),
       child: OutlinedButton(
-        onPressed: _isRescuingPassword
-            ? null
-            : () => _rescueFactoryPassword(deviceId),
+        onPressed:
+            _isRescuingPassword ? null : () => _rescueFactoryPassword(deviceId),
         style: OutlinedButton.styleFrom(
           foregroundColor: _labelColor,
           side: const BorderSide(color: _subtextColor),
@@ -429,121 +442,168 @@ class _HomePageState extends ConsumerState<HomePage>
                 ],
               ),
             ),
-            ListTile(
-              leading: const Icon(
-                PhosphorIconsRegular.pencilSimple,
-                color: _labelColor,
+            Expanded(
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  return SingleChildScrollView(
+                    child: ConstrainedBox(
+                      constraints: BoxConstraints(
+                        minHeight: constraints.maxHeight,
+                      ),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              ListTile(
+                                leading: const Icon(
+                                  PhosphorIconsRegular.pencilSimple,
+                                  color: _labelColor,
+                                ),
+                                title: const Text(
+                                  'Rename Device',
+                                  style: TextStyle(color: _labelColor),
+                                ),
+                                subtitle: Text(
+                                  deviceLabel,
+                                  style: const TextStyle(color: _subtextColor),
+                                ),
+                                onTap: _showRenameDialog,
+                              ),
+                              const Padding(
+                                padding: EdgeInsets.fromLTRB(16, 16, 16, 8),
+                                child: Text(
+                                  'BLUETOOTH & DEVICE',
+                                  style: TextStyle(
+                                    color: _subtextColor,
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w700,
+                                    letterSpacing: 1.2,
+                                  ),
+                                ),
+                              ),
+                              ListTile(
+                                leading: const Icon(
+                                  PhosphorIconsRegular.shareNetwork,
+                                  color: _labelColor,
+                                ),
+                                title: const Text(
+                                  'Share',
+                                  style: TextStyle(color: _labelColor),
+                                ),
+                                subtitle: const Text(
+                                  'QR code or invite for another phone',
+                                  style: TextStyle(
+                                      color: _subtextColor, fontSize: 12),
+                                ),
+                                onTap: () => _shareCurrentLock(device),
+                              ),
+                              ListTile(
+                                leading: Icon(
+                                  isConnected
+                                      ? PhosphorIconsRegular.bluetooth
+                                      : PhosphorIconsRegular.bluetoothSlash,
+                                  color: isConnected
+                                      ? _unlockedColor
+                                      : _subtextColor,
+                                ),
+                                title: Text(
+                                  isConnected ? 'Connected' : 'Not Connected',
+                                  style: const TextStyle(color: _labelColor),
+                                ),
+                                subtitle: Text(
+                                  isConnected
+                                      ? device.remoteId.str
+                                      : 'No lock paired',
+                                  style: const TextStyle(
+                                      color: _subtextColor, fontSize: 12),
+                                ),
+                              ),
+                              if (isConnected) ...[
+                                ListTile(
+                                  dense: true,
+                                  title: const Text(
+                                    'Hardware Name',
+                                    style: TextStyle(
+                                        color: _subtextColor, fontSize: 13),
+                                  ),
+                                  trailing: Text(
+                                    _hardwareName(device),
+                                    style: const TextStyle(
+                                        color: _labelColor, fontSize: 13),
+                                  ),
+                                ),
+                                ListTile(
+                                  dense: true,
+                                  title: const Text(
+                                    'Battery',
+                                    style: TextStyle(
+                                        color: _subtextColor, fontSize: 13),
+                                  ),
+                                  trailing: Text(
+                                    '$battery%',
+                                    style: const TextStyle(
+                                        color: _labelColor, fontSize: 13),
+                                  ),
+                                ),
+                                ListTile(
+                                  dense: true,
+                                  title: const Text(
+                                    'Signal (RSSI)',
+                                    style: TextStyle(
+                                        color: _subtextColor, fontSize: 13),
+                                  ),
+                                  trailing: Text(
+                                    isRssiAvailable(rssi)
+                                        ? formatRssiDisplay(rssi)
+                                        : kRssiDisconnectedLabel,
+                                    style: TextStyle(
+                                      color: isRssiAvailable(rssi)
+                                          ? _labelColor
+                                          : _subtextColor,
+                                      fontSize: 13,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ],
+                          ),
+                          Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              ListTile(
+                                leading: const Icon(
+                                  PhosphorIconsRegular.lightbulb,
+                                  color: _labelColor,
+                                ),
+                                title: const Text(
+                                  'Helpful Tips',
+                                  style: TextStyle(color: _labelColor),
+                                ),
+                                onTap: _showHelpfulTips,
+                              ),
+                              ListTile(
+                                leading: const Icon(
+                                  PhosphorIconsRegular.info,
+                                  color: _labelColor,
+                                ),
+                                title: const Text(
+                                  'About',
+                                  style: TextStyle(color: _labelColor),
+                                ),
+                                onTap: _showAboutDialog,
+                              ),
+                              const SizedBox(height: 8),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                },
               ),
-              title: const Text(
-                'Rename Device',
-                style: TextStyle(color: _labelColor),
-              ),
-              subtitle: Text(
-                deviceLabel,
-                style: const TextStyle(color: _subtextColor),
-              ),
-              onTap: _showRenameDialog,
             ),
-            const Padding(
-              padding: EdgeInsets.fromLTRB(16, 16, 16, 8),
-              child: Text(
-                'BLUETOOTH & DEVICE',
-                style: TextStyle(
-                  color: _subtextColor,
-                  fontSize: 12,
-                  fontWeight: FontWeight.w700,
-                  letterSpacing: 1.2,
-                ),
-              ),
-            ),
-            ListTile(
-              leading: const Icon(
-                PhosphorIconsRegular.shareNetwork,
-                color: _labelColor,
-              ),
-              title: const Text(
-                'Share',
-                style: TextStyle(color: _labelColor),
-              ),
-              subtitle: const Text(
-                'QR code or invite for another phone',
-                style: TextStyle(color: _subtextColor, fontSize: 12),
-              ),
-              onTap: () => _shareCurrentLock(device),
-            ),
-            ListTile(
-              leading: Icon(
-                isConnected
-                    ? PhosphorIconsRegular.bluetooth
-                    : PhosphorIconsRegular.bluetoothSlash,
-                color: isConnected ? _unlockedColor : _subtextColor,
-              ),
-              title: Text(
-                isConnected ? 'Connected' : 'Not Connected',
-                style: const TextStyle(color: _labelColor),
-              ),
-              subtitle: Text(
-                isConnected
-                    ? device.remoteId.str
-                    : 'No lock paired',
-                style: const TextStyle(color: _subtextColor, fontSize: 12),
-              ),
-            ),
-            if (isConnected) ...[
-              ListTile(
-                dense: true,
-                title: const Text(
-                  'Hardware Name',
-                  style: TextStyle(color: _subtextColor, fontSize: 13),
-                ),
-                trailing: Text(
-                  _hardwareName(device),
-                  style: const TextStyle(color: _labelColor, fontSize: 13),
-                ),
-              ),
-              ListTile(
-                dense: true,
-                title: const Text(
-                  'Battery',
-                  style: TextStyle(color: _subtextColor, fontSize: 13),
-                ),
-                trailing: Text(
-                  '$battery%',
-                  style: const TextStyle(color: _labelColor, fontSize: 13),
-                ),
-              ),
-              ListTile(
-                dense: true,
-                title: const Text(
-                  'Signal (RSSI)',
-                  style: TextStyle(color: _subtextColor, fontSize: 13),
-                ),
-                trailing: Text(
-                  isRssiAvailable(rssi)
-                      ? formatRssiDisplay(rssi)
-                      : kRssiDisconnectedLabel,
-                  style: TextStyle(
-                    color: isRssiAvailable(rssi)
-                        ? _labelColor
-                        : _subtextColor,
-                    fontSize: 13,
-                  ),
-                ),
-              ),
-            ],
-            const Spacer(),
-            ListTile(
-              leading: const Icon(
-                PhosphorIconsRegular.info,
-                color: _labelColor,
-              ),
-              title: const Text(
-                'About',
-                style: TextStyle(color: _labelColor),
-              ),
-              onTap: _showAboutDialog,
-            ),
-            const SizedBox(height: 8),
           ],
         ),
       ),
@@ -555,8 +615,9 @@ class _HomePageState extends ConsumerState<HomePage>
     ref.watch(savedLocksProvider);
     final bleState = ref.watch(bleProvider);
     final lockId = widget.lockDeviceId ?? bleState.device?.remoteId.str;
-    final savedLock =
-        lockId != null ? ref.read(savedLocksProvider.notifier).lockById(lockId) : null;
+    final savedLock = lockId != null
+        ? ref.read(savedLocksProvider.notifier).lockById(lockId)
+        : null;
 
     ref.listen(lockUnlockEventProvider, (previous, next) {
       if (previous == next) return;
@@ -589,7 +650,8 @@ class _HomePageState extends ConsumerState<HomePage>
                       : null,
                 ),
                 _LockSubHeader(
-                  deviceLabel: _deviceLabel(bleState, device: device).toUpperCase(),
+                  deviceLabel:
+                      _deviceLabel(bleState, device: device).toUpperCase(),
                   batteryLevel: displayBattery,
                 ),
                 Expanded(
@@ -674,14 +736,12 @@ class _HomePageState extends ConsumerState<HomePage>
                                 if (mounted) setState(() {});
                               }
                             : () async {
-                                final restored =
-                                    await LockConnectionHelper
-                                        .connectAndRestoreSession(
+                                final restored = await LockConnectionHelper
+                                    .connectAndRestoreSession(
                                   deviceId: widget.lockDeviceId!,
-                                  bleNotifier:
-                                      ref.read(bleProvider.notifier),
-                                  locksNotifier: ref
-                                      .read(savedLocksProvider.notifier),
+                                  bleNotifier: ref.read(bleProvider.notifier),
+                                  locksNotifier:
+                                      ref.read(savedLocksProvider.notifier),
                                   notificationManager: ref.read(
                                     notificationManagerProvider.notifier,
                                   ),
