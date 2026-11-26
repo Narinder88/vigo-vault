@@ -1,6 +1,7 @@
 package com.singh.fitnessssnacklock.wear.data
 
 import android.content.Context
+import com.google.android.gms.wearable.DataItem
 import com.google.android.gms.wearable.Wearable
 import kotlinx.coroutines.tasks.await
 
@@ -12,11 +13,18 @@ class LockConfigSync(
     suspend fun refreshFromDataLayer() {
         val items = dataClient.dataItems.await()
         try {
+            var current: DataItem? = null
+            var legacy: DataItem? = null
             for (item in items) {
-                if (item.uri.path == LockConfigRepository.DATA_PATH) {
-                    LockConfigRepository.getInstance(context).updateFromDataItem(item)
-                    return
+                when (item.uri.path) {
+                    LockConfigRepository.DATA_PATH -> current = item
+                    LockConfigRepository.LEGACY_DATA_PATH -> legacy = item
                 }
+            }
+            val repository = LockConfigRepository.getInstance(context)
+            when {
+                current != null -> repository.updateFromDataItem(current)
+                legacy != null -> repository.updateFromDataItem(legacy)
             }
         } finally {
             items.release()

@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'dart:io' show Platform;
 
 import 'package:fitness_snack_lock/models/saved_lock.dart';
@@ -106,9 +105,7 @@ class SavedLocksNotifier extends StateNotifier<SavedLocksState> {
       isLoading: false,
     );
 
-    if (primaryLockId != null) {
-      await PairedLockStorage.syncLockToWatch(primaryLockId);
-    }
+    await PairedLockStorage.syncAllLocksToWatch();
   }
 
   String? _resolvePrimaryLockId(
@@ -192,7 +189,7 @@ class SavedLocksNotifier extends StateNotifier<SavedLocksState> {
       primaryLockId: id,
       isLoading: state.isLoading,
     );
-    await PairedLockStorage.syncLockToWatch(id);
+    await PairedLockStorage.syncAllLocksToWatch();
   }
 
   /// Reorders locks, persists the new list, and promotes index 0 to primary.
@@ -228,13 +225,13 @@ class SavedLocksNotifier extends StateNotifier<SavedLocksState> {
     final newPrimaryId = ordered.first.id;
     if (newPrimaryId != previousPrimaryId) {
       await SavedLockStorage.setPrimaryLockId(newPrimaryId);
-      await PairedLockStorage.syncLockToWatch(newPrimaryId);
     }
 
     _setLocks(
       ordered,
       primaryLockId: newPrimaryId,
     );
+    await PairedLockStorage.syncAllLocksToWatch();
 
     return newPrimaryId != previousPrimaryId ? newPrimaryId : null;
   }
@@ -252,6 +249,7 @@ class SavedLocksNotifier extends StateNotifier<SavedLocksState> {
     ];
     await SavedLockStorage.saveLocks(locks);
     _setLocks(locks);
+    await PairedLockStorage.syncAllLocksToWatch();
   }
 
   Future<void> addOrUpdateLock(SavedLock lock) async {
@@ -266,6 +264,7 @@ class SavedLocksNotifier extends StateNotifier<SavedLocksState> {
     }
 
     _setLocks(locks);
+    await PairedLockStorage.syncAllLocksToWatch();
   }
 
   void replaceLock(SavedLock updated) {
@@ -306,6 +305,9 @@ class SavedLocksNotifier extends StateNotifier<SavedLocksState> {
         batteryLevel,
         existing?.lastBatteryLevel,
       ),
+      batteryReadAt: persistableBatteryLevel(batteryLevel) != null
+          ? DateTime.now()
+          : existing?.batteryReadAt,
       lastRssi: rssi ?? existing?.lastRssi ?? -100,
       lastConnectedAt: DateTime.now(),
     );
@@ -326,7 +328,6 @@ class SavedLocksNotifier extends StateNotifier<SavedLocksState> {
         !locks.any((entry) => entry.id == primaryLockId)) {
       primaryLockId = id;
       await SavedLockStorage.setPrimaryLockId(id);
-      await PairedLockStorage.syncLockToWatch(id);
     }
 
     _setLocks(
@@ -334,6 +335,7 @@ class SavedLocksNotifier extends StateNotifier<SavedLocksState> {
       activeLockId: id,
       primaryLockId: primaryLockId,
     );
+    await PairedLockStorage.syncAllLocksToWatch();
   }
 
   /// Saves a shared lock locally. Does not factory-reset the padlock.
@@ -423,8 +425,8 @@ class SavedLocksNotifier extends StateNotifier<SavedLocksState> {
     await SavedLockStorage.upsertLock(lock);
     if (state.primaryLockId == connectId) {
       await SavedLockStorage.setPrimaryLockId(connectId);
-      unawaited(PairedLockStorage.syncLockToWatch(connectId));
     }
+    await PairedLockStorage.syncAllLocksToWatch();
   }
 
   void _publishLock(SavedLock lock) {
@@ -463,6 +465,7 @@ class SavedLocksNotifier extends StateNotifier<SavedLocksState> {
         if (lock.id == lockId) updated else lock,
     ];
     _setLocks(locks);
+    await PairedLockStorage.syncAllLocksToWatch();
   }
 
   Future<void> removeLock(String lockId) async {
@@ -489,9 +492,6 @@ class SavedLocksNotifier extends StateNotifier<SavedLocksState> {
 
     if (state.primaryLockId == removedId || state.primaryLockId == lockId) {
       await SavedLockStorage.setPrimaryLockId(primaryLockId);
-      if (primaryLockId != null) {
-        await PairedLockStorage.syncLockToWatch(primaryLockId);
-      }
     }
 
     _setLocks(
@@ -499,6 +499,7 @@ class SavedLocksNotifier extends StateNotifier<SavedLocksState> {
       activeLockId: activeLockId,
       primaryLockId: primaryLockId,
     );
+    await PairedLockStorage.syncAllLocksToWatch();
   }
 
   Future<void> updateTelemetry({
@@ -509,11 +510,14 @@ class SavedLocksNotifier extends StateNotifier<SavedLocksState> {
     final existing = lockById(lockId);
     if (existing == null) return;
 
+    final recordedBattery = persistableBatteryLevel(batteryLevel);
     final updated = existing.copyWith(
       lastBatteryLevel: retainedBatteryLevel(
         batteryLevel,
         existing.lastBatteryLevel,
       ),
+      batteryReadAt:
+          recordedBattery != null ? DateTime.now() : existing.batteryReadAt,
       lastRssi: rssi ?? existing.lastRssi,
       lastConnectedAt: DateTime.now(),
     );
@@ -525,6 +529,9 @@ class SavedLocksNotifier extends StateNotifier<SavedLocksState> {
         if (lock.id == lockId) updated else lock,
     ];
     _setLocks(locks);
+    if (recordedBattery != null) {
+      await PairedLockStorage.syncAllLocksToWatch();
+    }
   }
 
   Future<void> setActiveLockId(String? lockId) async {

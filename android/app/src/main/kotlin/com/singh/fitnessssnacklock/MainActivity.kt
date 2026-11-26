@@ -9,7 +9,7 @@ class MainActivity : FlutterFragmentActivity() {
 
     override fun onResume() {
         super.onResume()
-        WearLockDataSync.syncFirstPairedLock(applicationContext)
+        WearLockDataSync.syncAllFromLocalStorage(applicationContext)
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -36,7 +36,6 @@ class MainActivity : FlutterFragmentActivity() {
                             return@setMethodCallHandler
                         }
                         storage.pair(deviceId)
-                        WearLockDataSync.syncFromStorage(applicationContext, deviceId)
                         result.success(null)
                     }
 
@@ -71,7 +70,6 @@ class MainActivity : FlutterFragmentActivity() {
                             return@setMethodCallHandler
                         }
                         storage.saveSecretKey(deviceId, secretKey)
-                        WearLockDataSync.syncFromStorage(applicationContext, deviceId)
                         result.success(null)
                     }
 
@@ -111,7 +109,6 @@ class MainActivity : FlutterFragmentActivity() {
                             return@setMethodCallHandler
                         }
                         storage.savePassword(deviceId, password)
-                        WearLockDataSync.syncFromStorage(applicationContext, deviceId)
                         result.success(null)
                     }
 
@@ -134,20 +131,8 @@ class MainActivity : FlutterFragmentActivity() {
                         result.success(storage.hasPassword(deviceId))
                     }
 
-                    "syncLockToWatch" -> {
-                        val deviceId = call.argument<String>("deviceId")
-                        val secretKey = call.argument<String>("secretKey")
-                        val password = call.argument<String>("password")
-                        if (deviceId.isNullOrBlank()) {
-                            result.error("invalid_argument", "deviceId is required", null)
-                            return@setMethodCallHandler
-                        }
-                        WearLockDataSync.syncLockToWatch(
-                            context = applicationContext,
-                            macAddress = deviceId,
-                            secretKey = secretKey ?: storage.getSecretKey(deviceId),
-                            password = password ?: storage.getPassword(deviceId),
-                        )
+                    "syncLockToWatch", "syncAllLocksToWatch" -> {
+                        WearLockDataSync.syncAllFromLocalStorage(applicationContext)
                         result.success(null)
                     }
 

@@ -1,7 +1,6 @@
 import 'dart:io';
 
 import 'package:fitness_snack_lock/services/data_service.dart';
-import 'package:fitness_snack_lock/utils/lock_mac.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -291,38 +290,30 @@ class PairedLockStorage {
     await unpair(fromId);
   }
 
-  /// Pushes the lock MAC and secret key to the paired watch app (Wear OS / watchOS).
-  /// Only the primary lock is synced. Failures are logged and do not block callers.
-  static Future<void> syncLockToWatch(String deviceId) async {
-    if (deviceId.isEmpty || !_useNativeSecureStorage) return;
+  /// Publishes every saved lock to the paired Wear OS watch.
+  /// An empty saved list clears the watch. Failures are logged and do not
+  /// block callers. Call this only after the saved list and credentials for
+  /// the change are both persisted.
+  static Future<void> syncAllLocksToWatch() async {
+    if (!_useNativeSecureStorage || !Platform.isAndroid) return;
 
-    final prefs = await SharedPreferences.getInstance();
-    final primary = prefs.getString('smart_lock_primary_lock_id');
-    if (primary == null ||
-        LockMac.normalize(primary) != LockMac.normalize(deviceId)) {
-      return;
-    }
-
-      try {
-        final secretKey = await getSecretKey(deviceId);
-        final password = await getPassword(deviceId);
-        await _channel.invokeMethod<void>(
-          'syncLockToWatch',
-          {
-            'deviceId': deviceId,
-            if (secretKey != null && secretKey.isNotEmpty) 'secretKey': secretKey,
-            if (password != null && password.isNotEmpty) 'password': password,
-          },
-        );
+    try {
+      await _channel.invokeMethod<void>('syncAllLocksToWatch');
     } on MissingPluginException catch (error) {
-      debugPrint('syncLockToWatch unavailable (no native handler): $error');
+      debugPrint('syncAllLocksToWatch unavailable (no native handler): $error');
     } on PlatformException catch (error) {
       debugPrint(
-        'syncLockToWatch failed (${error.code}): ${error.message ?? error}',
+        'syncAllLocksToWatch failed (${error.code}): ${error.message ?? error}',
       );
     } catch (error) {
-      debugPrint('syncLockToWatch failed: $error');
+      debugPrint('syncAllLocksToWatch failed: $error');
     }
+  }
+
+  /// Republishes the full saved-lock list after a credential change on [deviceId].
+  static Future<void> syncLockToWatch(String deviceId) async {
+    if (deviceId.isEmpty) return;
+    await syncAllLocksToWatch();
   }
 
   static bool get _useNativeSecureStorage =>

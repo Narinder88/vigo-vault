@@ -5,49 +5,37 @@ import android.content.pm.PackageManager
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.lifecycle.viewmodel.compose.viewModel
-import androidx.wear.compose.material.Button
-import androidx.wear.compose.material.CircularProgressIndicator
-import androidx.wear.compose.material.Text
+import androidx.wear.compose.foundation.lazy.rememberScalingLazyListState
+import androidx.wear.compose.material.PositionIndicator
+import androidx.wear.compose.material.Scaffold
+import androidx.wear.compose.material.TimeText
 import com.singh.fitnessssnacklock.wear.R
+import com.singh.fitnessssnacklock.wear.data.SyncedLock
 import kotlinx.coroutines.delay
-
-private val TrueBlack = Color(0xFF000000)
-private val AccentGreen = Color(0xFF00E676)
 
 @Composable
 fun UnlockScreen(
-    viewModel: UnlockViewModel = viewModel(),
+    lock: SyncedLock,
+    viewModel: UnlockViewModel,
+    readyLabel: String? = null,
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    val listState = rememberScalingLazyListState()
+    val resolvedReadyLabel = readyLabel ?: stringResource(R.string.unlock)
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
     ) { grants ->
-        val allGranted = grants.values.all { it }
-        if (allGranted) {
-            viewModel.unlock()
+        if (grants.values.all { it }) {
+            viewModel.unlock(lock.id)
         }
     }
 
@@ -62,7 +50,7 @@ fun UnlockScreen(
                 Manifest.permission.BLUETOOTH_SCAN,
             ) == PackageManager.PERMISSION_GRANTED
             if (connectGranted && scanGranted) {
-                viewModel.unlock()
+                viewModel.unlock(lock.id)
             } else {
                 permissionLauncher.launch(
                     arrayOf(
@@ -72,7 +60,7 @@ fun UnlockScreen(
                 )
             }
         } else {
-            viewModel.unlock()
+            viewModel.unlock(lock.id)
         }
     }
 
@@ -89,76 +77,38 @@ fun UnlockScreen(
         }
     }
 
-    WearLockTheme {
-        when {
-            uiState.lockConfig != null -> {
-                val statusLabel = when (val status = uiState.statusMessage) {
-                    UnlockStatus.NoLockConfigured ->
-                        stringResource(R.string.no_lock_configured)
+    val statusLabel = when (val status = uiState.statusMessage) {
+        UnlockStatus.NoLockConfigured ->
+            stringResource(R.string.no_locks_synced)
 
-                    UnlockStatus.PermissionRequired ->
-                        stringResource(R.string.bluetooth_permission_required)
+        UnlockStatus.PermissionRequired ->
+            stringResource(R.string.bluetooth_permission_required)
 
-                    UnlockStatus.Ready ->
-                        stringResource(R.string.unlock)
+        UnlockStatus.Ready -> resolvedReadyLabel
 
-                    UnlockStatus.Unlocking ->
-                        stringResource(R.string.unlocking)
+        UnlockStatus.Unlocking ->
+            stringResource(R.string.unlocking)
 
-                    UnlockStatus.Success ->
-                        stringResource(R.string.unlock_success)
+        UnlockStatus.Success ->
+            stringResource(R.string.unlock_success)
 
-                    is UnlockStatus.Failure ->
-                        status.message.ifBlank {
-                            stringResource(R.string.unlock_failed)
-                        }
-                }
-
-                LockControlScreen(
-                    statusLabel = statusLabel,
-                    isUnlocking = uiState.isUnlocking,
-                    enabled = !uiState.isUnlocking,
-                    onUnlockClick = { requestUnlock() },
-                )
+        is UnlockStatus.Failure ->
+            status.message.ifBlank {
+                stringResource(R.string.unlock_failed)
             }
+    }
 
-            else -> {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(TrueBlack)
-                        .padding(16.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(12.dp),
-                    ) {
-                        Text(
-                            text = stringResource(R.string.no_lock_configured),
-                            color = Color.White.copy(alpha = 0.88f),
-                            fontSize = 12.sp,
-                            textAlign = TextAlign.Center,
-                        )
-                        if (uiState.isRefreshing) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(32.dp),
-                                indicatorColor = AccentGreen,
-                            )
-                            Text(
-                                text = stringResource(R.string.syncing),
-                                color = AccentGreen,
-                                fontSize = 11.sp,
-                                textAlign = TextAlign.Center,
-                            )
-                        } else {
-                            Button(onClick = { viewModel.refreshConfig() }) {
-                                Text(text = stringResource(R.string.refresh))
-                            }
-                        }
-                    }
-                }
-            }
-        }
+    Scaffold(
+        timeText = { TimeText() },
+        positionIndicator = { PositionIndicator(scalingLazyListState = listState) },
+    ) {
+        LockControlScreen(
+            statusLabel = statusLabel,
+            lockName = lock.displayName,
+            batteryLevel = lock.batteryLevel,
+            isUnlocking = uiState.isUnlocking,
+            enabled = !uiState.isUnlocking,
+            onUnlockClick = { requestUnlock() },
+        )
     }
 }

@@ -30,6 +30,7 @@ class LockBleClient(
         macAddress: String,
         secretKey: String,
         passwordHex: String = LockProtocol.DEFAULT_PASSWORD_HEX,
+        onBatteryLevel: (Int) -> Unit = {},
     ): UnlockResult {
         val adapter = BluetoothAdapter.getDefaultAdapter()
             ?: return UnlockResult.Failure("Bluetooth unavailable")
@@ -65,7 +66,7 @@ class LockBleClient(
                 encryptKey,
             ) ?: return UnlockResult.Failure(HANDSHAKE_FAILED_MESSAGE)
 
-            writeUnlock(
+            val unlockResult = writeUnlock(
                 session,
                 writeCharacteristic,
                 notifyCharacteristic,
@@ -73,6 +74,8 @@ class LockBleClient(
                 encryptKey,
                 passwordHex,
             )
+            readBatteryLevel(session, services)?.let(onBatteryLevel)
+            unlockResult
         } catch (error: TimeoutCancellationException) {
             Log.e(TAG, "Unlock timed out", error)
             UnlockResult.Failure(CONNECT_TIMEOUT_MESSAGE)
@@ -80,6 +83,9 @@ class LockBleClient(
             Log.e(TAG, "Unlock failed", error)
             UnlockResult.Failure(error.message ?: "Unlock failed")
         } finally {
+            // Success, failure, timeout, and early returns all land here.
+            // releaseGatt calls disconnect() and then close() so the lock
+            // frees its connection slot for the phone or iPad.
             session.releaseGatt(notifyCharacteristic)
         }
     }
@@ -177,6 +183,37 @@ class LockBleClient(
         }
     }
 
+    @SuppressLint("MissingPermission")
+    private suspend fun readBatteryLevel(
+        session: GattSession,
+        services: List<android.bluetooth.BluetoothGattService>,
+    ): Int? {
+        val characteristic = findBatteryCharacteristic(services) ?: return null
+        return try {
+            val value = session.readCharacteristic(characteristic) ?: return null
+            if (value.isEmpty()) return null
+            val level = value[0].toInt() and 0xFF
+            level.takeIf { it in 1..100 }
+        } catch (error: TimeoutCancellationException) {
+            Log.w(TAG, "Battery read timed out")
+            null
+        } catch (error: Exception) {
+            Log.w(TAG, "Battery read skipped: ${error.message}")
+            null
+        }
+    }
+
+    private fun findBatteryCharacteristic(
+        services: List<android.bluetooth.BluetoothGattService>,
+    ): BluetoothGattCharacteristic? {
+        val batteryService = services.firstOrNull { it.uuid == BATTERY_SERVICE_UUID }
+            ?: return null
+        return batteryService.characteristics.firstOrNull { characteristic ->
+            characteristic.uuid == BATTERY_LEVEL_UUID &&
+                characteristic.properties and BluetoothGattCharacteristic.PROPERTY_READ != 0
+        }
+    }
+
     private fun normalizeMacAddress(macAddress: String): String {
         val compact = macAddress.replace(":", "").replace("-", "").uppercase()
         require(compact.length == 12) { "Invalid MAC address: $macAddress" }
@@ -191,6 +228,7 @@ class LockBleClient(
         private var descriptorDeferred: CompletableDeferred<Unit>? = null
         private var writeDeferred: CompletableDeferred<Unit>? = null
         private var notifyDeferred: CompletableDeferred<ByteArray>? = null
+        private var readDeferred: CompletableDeferred<ByteArray>? = null
         private var notifyCharacteristicId: UUID? = null
 
         private val callback = object : BluetoothGattCallback() {
@@ -250,6 +288,25 @@ class LockBleClient(
                 handleNotify(characteristic, value)
             }
 
+            @Deprecated("Deprecated in API 33")
+            override fun onCharacteristicRead(
+                gatt: BluetoothGatt,
+                characteristic: BluetoothGattCharacteristic,
+                status: Int,
+            ) {
+                @Suppress("DEPRECATION")
+                completeRead(status, characteristic.value ?: byteArrayOf())
+            }
+
+            override fun onCharacteristicRead(
+                gatt: BluetoothGatt,
+                characteristic: BluetoothGattCharacteristic,
+                value: ByteArray,
+                status: Int,
+            ) {
+                completeRead(status, value)
+            }
+
             override fun onCharacteristicWrite(
                 gatt: BluetoothGatt,
                 characteristic: BluetoothGattCharacteristic,
@@ -260,6 +317,18 @@ class LockBleClient(
                 } else if (writeDeferred?.isCompleted == false) {
                     writeDeferred?.completeExceptionally(
                         IllegalStateException("Characteristic write failed (status=$status)"),
+                    )
+                }
+            }
+
+            private fun completeRead(status: Int, value: ByteArray) {
+                val pending = readDeferred ?: return
+                if (pending.isCompleted) return
+                if (status == BluetoothGatt.GATT_SUCCESS && value.isNotEmpty()) {
+                    pending.complete(value)
+                } else {
+                    pending.completeExceptionally(
+                        IllegalStateException("Characteristic read failed (status=$status)"),
                     )
                 }
             }
@@ -362,6 +431,27 @@ class LockBleClient(
         }
 
         @SuppressLint("MissingPermission")
+        suspend fun readCharacteristic(
+            characteristic: BluetoothGattCharacteristic,
+        ): ByteArray? {
+            val activeGatt = gatt ?: return null
+            readDeferred = CompletableDeferred()
+            @Suppress("DEPRECATION")
+            val started = activeGatt.readCharacteristic(characteristic)
+            if (!started) {
+                readDeferred = null
+                return null
+            }
+            return try {
+                withTimeout(BATTERY_READ_TIMEOUT_MS) {
+                    readDeferred?.await()
+                }
+            } catch (_: TimeoutCancellationException) {
+                null
+            }
+        }
+
+        @SuppressLint("MissingPermission")
         suspend fun writeEncryptedAndAwaitNotify(
             writeCharacteristic: BluetoothGattCharacteristic,
             notifyCharacteristic: BluetoothGattCharacteristic,
@@ -450,10 +540,13 @@ class LockBleClient(
     companion object {
         private const val TAG = "WearLockBle"
         private val CCCD_UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
+        private val BATTERY_SERVICE_UUID = UUID.fromString("0000180f-0000-1000-8000-00805f9b34fb")
+        private val BATTERY_LEVEL_UUID = UUID.fromString("00002a19-0000-1000-8000-00805f9b34fb")
         private const val CONNECT_TIMEOUT_MS = 15_000L
         private const val SERVICE_DISCOVERY_TIMEOUT_MS = 10_000L
         private const val HANDSHAKE_TIMEOUT_MS = 5_000L
         private const val UNLOCK_NOTIFY_TIMEOUT_MS = 3_000L
+        private const val BATTERY_READ_TIMEOUT_MS = 2_000L
         private const val MAX_HANDSHAKE_ATTEMPTS = 3
         private const val CONNECT_TIMEOUT_MESSAGE =
             "Could not reach lock. Move closer and close Vigo Vault on your phone."

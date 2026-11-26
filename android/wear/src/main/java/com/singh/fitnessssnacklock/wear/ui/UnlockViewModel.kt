@@ -7,9 +7,9 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.singh.fitnessssnacklock.wear.ble.LockBleClient
-import com.singh.fitnessssnacklock.wear.data.LockConfig
 import com.singh.fitnessssnacklock.wear.data.LockConfigRepository
 import com.singh.fitnessssnacklock.wear.data.LockConfigSync
+import com.singh.fitnessssnacklock.wear.data.SyncedLock
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -21,27 +21,17 @@ class UnlockViewModel(application: Application) : AndroidViewModel(application) 
     private val configSync = LockConfigSync(application)
     private val bleClient = LockBleClient(application)
 
+    val locks: StateFlow<List<SyncedLock>> = repository.locks
+
+    private val _selectedLockId = MutableStateFlow<String?>(null)
+    val selectedLockId: StateFlow<String?> = _selectedLockId.asStateFlow()
+
     private val _uiState = MutableStateFlow(UnlockUiState())
     val uiState: StateFlow<UnlockUiState> = _uiState.asStateFlow()
 
     init {
         viewModelScope.launch {
             configSync.refreshFromDataLayer()
-        }
-
-        viewModelScope.launch {
-            repository.lockConfig.collect { config ->
-                _uiState.update { current ->
-                    current.copy(
-                        lockConfig = config,
-                        statusMessage = if (config == null) {
-                            UnlockStatus.NoLockConfigured
-                        } else {
-                            UnlockStatus.Ready
-                        },
-                    )
-                }
-            }
         }
     }
 
@@ -55,34 +45,40 @@ class UnlockViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    fun unlock() {
-        val config = repository.lockConfig.value
-        if (config == null) {
-            _uiState.update {
-                it.copy(statusMessage = UnlockStatus.NoLockConfigured)
-            }
+    fun selectLock(lockId: String) {
+        _selectedLockId.value = lockId
+        if (!_uiState.value.isUnlocking) {
+            _uiState.update { it.copy(statusMessage = UnlockStatus.Ready) }
+        }
+    }
+
+    fun unlock(lockId: String) {
+        val lock = repository.locks.value.firstOrNull { it.id == lockId }
+        if (lock == null) {
+            _uiState.update { it.copy(statusMessage = UnlockStatus.NoLockConfigured) }
             return
         }
-
-        if (!hasBluetoothPermission()) {
-            _uiState.update {
-                it.copy(statusMessage = UnlockStatus.PermissionRequired)
-            }
-            return
-        }
-
         if (_uiState.value.isUnlocking) return
 
-        viewModelScope.launch {
-            _uiState.update {
-                it.copy(isUnlocking = true, statusMessage = UnlockStatus.Unlocking)
-            }
+        if (!hasBluetoothPermission()) {
+            _uiState.update { it.copy(statusMessage = UnlockStatus.PermissionRequired) }
+            return
+        }
 
+        _uiState.update {
+            it.copy(isUnlocking = true, statusMessage = UnlockStatus.Unlocking)
+        }
+
+        viewModelScope.launch {
+            val current = repository.locks.value.firstOrNull { it.id == lockId } ?: lock
             when (
                 val result = bleClient.connectAndUnlock(
-                    macAddress = config.macAddress,
-                    secretKey = config.secretKey,
-                    passwordHex = config.passwordHex,
+                    macAddress = current.mac,
+                    secretKey = current.aesKey,
+                    passwordHex = current.password,
+                    onBatteryLevel = { level ->
+                        repository.updateBattery(current.id, current.mac, level)
+                    },
                 )
             ) {
                 is LockBleClient.UnlockResult.Success -> {
@@ -107,16 +103,7 @@ class UnlockViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun clearTransientStatus() {
-        val config = repository.lockConfig.value
-        _uiState.update {
-            it.copy(
-                statusMessage = if (config == null) {
-                    UnlockStatus.NoLockConfigured
-                } else {
-                    UnlockStatus.Ready
-                },
-            )
-        }
+        _uiState.update { it.copy(statusMessage = UnlockStatus.Ready) }
     }
 
     private fun hasBluetoothPermission(): Boolean {
@@ -136,10 +123,9 @@ class UnlockViewModel(application: Application) : AndroidViewModel(application) 
 }
 
 data class UnlockUiState(
-    val lockConfig: LockConfig? = null,
     val isUnlocking: Boolean = false,
     val isRefreshing: Boolean = false,
-    val statusMessage: UnlockStatus = UnlockStatus.NoLockConfigured,
+    val statusMessage: UnlockStatus = UnlockStatus.Ready,
 )
 
 sealed class UnlockStatus {

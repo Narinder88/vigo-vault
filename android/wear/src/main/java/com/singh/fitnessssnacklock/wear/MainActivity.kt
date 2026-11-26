@@ -3,13 +3,13 @@ package com.singh.fitnessssnacklock.wear
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import com.singh.fitnessssnacklock.wear.ui.UnlockScreen
+import com.singh.fitnessssnacklock.wear.ui.WearApp
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            UnlockScreen()
+            WearApp()
         }
     }
 }

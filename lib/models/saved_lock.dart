@@ -8,6 +8,7 @@ class SavedLock {
     this.hardwareMac,
     this.peripheralUuid,
     this.lastBatteryLevel,
+    this.batteryReadAt,
     this.lastRssi = -100,
     this.lastConnectedAt,
     this.isPinned = false,
@@ -24,6 +25,9 @@ class SavedLock {
   /// has been seen. Android leaves this empty.
   final String? peripheralUuid;
   final int? lastBatteryLevel;
+
+  /// When [lastBatteryLevel] was last measured. RSSI updates do not move this.
+  final DateTime? batteryReadAt;
   final int lastRssi;
   final DateTime? lastConnectedAt;
 
@@ -47,6 +51,7 @@ class SavedLock {
     String? hardwareMac,
     String? peripheralUuid,
     int? lastBatteryLevel,
+    DateTime? batteryReadAt,
     int? lastRssi,
     DateTime? lastConnectedAt,
     bool? isPinned,
@@ -60,6 +65,7 @@ class SavedLock {
       peripheralUuid: peripheralUuid ?? this.peripheralUuid,
       lastBatteryLevel:
           clearBattery ? null : (lastBatteryLevel ?? this.lastBatteryLevel),
+      batteryReadAt: clearBattery ? null : (batteryReadAt ?? this.batteryReadAt),
       lastRssi: lastRssi ?? this.lastRssi,
       lastConnectedAt: lastConnectedAt ?? this.lastConnectedAt,
       isPinned: isPinned ?? this.isPinned,
@@ -74,6 +80,7 @@ class SavedLock {
       'hardwareMac': hardwareMac,
       'peripheralUuid': peripheralUuid,
       'lastBatteryLevel': lastBatteryLevel,
+      'batteryReadAt': batteryReadAt?.toIso8601String(),
       'lastRssi': lastRssi,
       'lastConnectedAt': lastConnectedAt?.toIso8601String(),
       'isPinned': isPinned,
@@ -82,6 +89,7 @@ class SavedLock {
 
   factory SavedLock.fromJson(Map<String, dynamic> json) {
     final lastConnectedRaw = json['lastConnectedAt'] as String?;
+    final batteryReadRaw = json['batteryReadAt'] as String?;
     return SavedLock(
       id: json['id'] as String,
       displayName: json['displayName'] as String? ?? 'Smart Lock',
@@ -89,6 +97,9 @@ class SavedLock {
       hardwareMac: json['hardwareMac'] as String?,
       peripheralUuid: json['peripheralUuid'] as String?,
       lastBatteryLevel: json['lastBatteryLevel'] as int?,
+      batteryReadAt: batteryReadRaw == null
+          ? null
+          : DateTime.tryParse(batteryReadRaw),
       lastRssi: json['lastRssi'] as int? ?? -100,
       lastConnectedAt: lastConnectedRaw == null
           ? null

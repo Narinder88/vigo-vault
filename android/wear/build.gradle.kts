@@ -13,6 +13,18 @@ if (keystorePropertiesFile.exists()) {
     keystoreProperties.load(FileInputStream(keystorePropertiesFile))
 }
 
+// versionName matches the phone app. versionCode is 100000 + the phone
+// versionCode so both bundles can ship on one Play listing.
+val pubspecFile = rootProject.file("../pubspec.yaml")
+val pubspecVersion = Regex("""(?m)^version:\s*(\S+)\+(\d+)\s*$""")
+    .find(pubspecFile.readText())
+    ?: error(
+        "Could not read version from ${pubspecFile.path}. " +
+            "Wear OS versionName must match the phone app.",
+    )
+val syncedVersionName = pubspecVersion.groupValues[1]
+val syncedVersionCode = 100_000 + pubspecVersion.groupValues[2].toInt()
+
 android {
     namespace = "com.singh.fitnessssnacklock.wear"
     compileSdk = 36
@@ -21,8 +33,8 @@ android {
         applicationId = "com.singh.fitnessssnacklock"
         minSdk = 30
         targetSdk = 36
-        versionCode = 2
-        versionName = "1.0.1"
+        versionCode = syncedVersionCode
+        versionName = syncedVersionName
     }
 
     signingConfigs {
@@ -72,6 +84,7 @@ dependencies {
 
     implementation("androidx.wear.compose:compose-material:$wearComposeVersion")
     implementation("androidx.wear.compose:compose-foundation:$wearComposeVersion")
+    implementation("androidx.wear.compose:compose-navigation:$wearComposeVersion")
 
     implementation("com.google.android.gms:play-services-wearable:18.2.0")
 

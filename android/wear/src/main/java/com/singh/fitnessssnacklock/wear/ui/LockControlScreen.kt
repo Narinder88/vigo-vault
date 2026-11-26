@@ -10,13 +10,15 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.ui.res.stringResource
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
@@ -34,6 +36,7 @@ import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -48,6 +51,7 @@ import kotlin.math.PI
 private val TrueBlack = Color(0xFF000000)
 private val AccentGreen = Color(0xFF00E676)
 private val BezelGray = Color(0xFFB8B8B8)
+private val LowBatteryRed = Color(0xFFE53935)
 
 @Composable
 fun LockControlScreen(
@@ -56,6 +60,8 @@ fun LockControlScreen(
     enabled: Boolean,
     onUnlockClick: () -> Unit,
     modifier: Modifier = Modifier,
+    lockName: String = "",
+    batteryLevel: Int? = null,
 ) {
     Box(
         modifier = modifier
@@ -83,18 +89,69 @@ fun LockControlScreen(
                 )
             }
 
+            Column(
+                modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 10.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                Text(
+                    text = statusLabel,
+                    color = if (isUnlocking) AccentGreen else Color.White.copy(alpha = 0.88f),
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Medium,
+                    letterSpacing = 0.6.sp,
+                    textAlign = TextAlign.Center,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (lockName.isNotBlank() && lockName != statusLabel) {
+                    Text(
+                        text = lockName,
+                        color = Color.White.copy(alpha = 0.72f),
+                        fontSize = 11.sp,
+                        textAlign = TextAlign.Center,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                BatteryCaption(batteryLevel)
+            }
+        }
+    }
+}
+
+@Composable
+private fun BatteryCaption(batteryLevel: Int?) {
+    val level = batteryLevel?.takeIf { it in 1..100 } ?: return
+    if (level in 1..20) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Icon(
+                painter = painterResource(R.drawable.ic_battery_warning),
+                contentDescription = null,
+                tint = LowBatteryRed,
+                modifier = Modifier.size(12.dp),
+            )
             Text(
-                text = statusLabel,
-                color = if (isUnlocking) AccentGreen else Color.White.copy(alpha = 0.88f),
+                text = stringResource(R.string.low_battery, level),
+                color = LowBatteryRed,
                 fontSize = 11.sp,
                 fontWeight = FontWeight.Medium,
-                letterSpacing = 0.6.sp,
                 textAlign = TextAlign.Center,
-                modifier = Modifier
-                    .padding(bottom = 14.dp)
-                    .height(18.dp),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
         }
+    } else {
+        Text(
+            text = stringResource(R.string.battery_percent, level),
+            color = Color.White.copy(alpha = 0.72f),
+            fontSize = 11.sp,
+            textAlign = TextAlign.Center,
+            maxLines = 1,
+        )
     }
 }
 
